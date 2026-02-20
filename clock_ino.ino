@@ -53,7 +53,6 @@ const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 7 * 3600;
 const int daylightOffset_sec = 0;
 String statusLine = "IP: CHUA KET NOI";
-unsigned long homeStatusShowIpUntil = 0;
 String lastHomeDisplayedStatus = "";
 String lastWaterDisplayedStatus = "";
 
@@ -187,6 +186,7 @@ struct StatusMarqueeState {
 StatusMarqueeState homeStatusMarquee = {"", 0, 0};
 StatusMarqueeState waterStatusMarquee = {"", 0, 0};
 String lastRuntimeStatusSerial = "";
+String lastFullStatusSerial = "";
 
 String buildRuntimeStatusLine()
 {
@@ -201,18 +201,32 @@ String buildRuntimeStatusLine()
 
 String buildHomeStatusLine()
 {
-  if (homeStatusShowIpUntil != 0 && millis() < homeStatusShowIpUntil) {
-    return statusLine;
+  String fullStatus = "MODE:";
+  fullStatus += (currentMode == HOME_MODE) ? "HOME" : "WATER";
+  fullStatus += " | R:";
+  fullStatus += buildRuntimeStatusLine();
+  if (currentMode == WATER_CONTROL_MODE || waterOn) {
+    fullStatus += " | T:";
+    fullStatus += String(currentTemp, 1);
+    fullStatus += "/";
+    fullStatus += String(setTemp, 1);
   }
-  return buildRuntimeStatusLine();
+  fullStatus += " | ";
+  fullStatus += statusLine;
+  return fullStatus;
 }
 
 void publishRuntimeStatusUpdate()
 {
   String runtimeStatus = buildRuntimeStatusLine();
+  String fullStatus = buildHomeStatusLine();
   if (runtimeStatus != lastRuntimeStatusSerial) {
     Serial.println(String("[RUNTIME] ") + runtimeStatus);
     lastRuntimeStatusSerial = runtimeStatus;
+  }
+  if (fullStatus != lastFullStatusSerial) {
+    Serial.println(String("[STATUS] ") + fullStatus);
+    lastFullStatusSerial = fullStatus;
   }
 }
 
@@ -250,9 +264,9 @@ bool drawStatusTextMarquee(const String& text,
   unsigned long now = millis();
   if (isLong && (now - state.lastStepMs >= stepIntervalMs)) {
     int cycleLen = text.length() + 3;
-    state.offset++;
-    if (state.offset >= cycleLen) {
-      state.offset = 0;
+    state.offset--;
+    if (state.offset < 0) {
+      state.offset = cycleLen - 1;
     }
     state.lastStepMs = now;
     needStep = true;
@@ -627,9 +641,6 @@ void drawHomeScreen()
   tft.drawString(dateBuf, CENTER_X, CENTER_Y + 10);
   
   lastDay = timeinfo.tm_mday;
-  if (homeStatusShowIpUntil == 0) {
-    homeStatusShowIpUntil = millis() + 5000;
-  }
   
   tft.drawRoundRect(HOME_STATUS_BOX_X, HOME_STATUS_BOX_Y, HOME_STATUS_BOX_W, HOME_STATUS_BOX_H, 6, COLOR_GOLD_DARK);
   tft.drawRoundRect(HOME_STATUS_BOX_X + 1, HOME_STATUS_BOX_Y + 1, HOME_STATUS_BOX_W - 2, HOME_STATUS_BOX_H - 2, 6, COLOR_GOLD);
@@ -717,8 +728,8 @@ void drawWaterControlScreen()
 
   tft.drawRoundRect(WATER_STATUS_BOX_X, WATER_STATUS_BOX_Y, WATER_STATUS_BOX_W, WATER_STATUS_BOX_H, 5, COLOR_GOLD_DARK);
   tft.drawRoundRect(WATER_STATUS_BOX_X + 1, WATER_STATUS_BOX_Y + 1, WATER_STATUS_BOX_W - 2, WATER_STATUS_BOX_H - 2, 5, COLOR_GOLD);
-  String runtimeStatus = buildRuntimeStatusLine();
-  drawStatusTextMarquee(runtimeStatus,
+  String waterStatus = buildHomeStatusLine();
+  drawStatusTextMarquee(waterStatus,
                         WATER_STATUS_BOX_X,
                         WATER_STATUS_BOX_Y,
                         WATER_STATUS_BOX_W,
@@ -726,7 +737,7 @@ void drawWaterControlScreen()
                         COLOR_GOLD,
                         waterStatusMarquee,
                         true);
-  lastWaterDisplayedStatus = runtimeStatus;
+  lastWaterDisplayedStatus = waterStatus;
   
   Serial.println("[DISPLAY] WATER SCREEN vẽ xong");
 }
@@ -907,13 +918,13 @@ void updateWaterScreenElements()
     Serial.printf("[DISPLAY] Servo angle: %d°\n", servoAngle);
   }
 
-  String runtimeStatus = buildRuntimeStatusLine();
-  bool waterStatusChanged = (runtimeStatus != lastWaterDisplayedStatus);
+  String waterStatus = buildHomeStatusLine();
+  bool waterStatusChanged = (waterStatus != lastWaterDisplayedStatus);
   if (waterStatusChanged) {
-    lastWaterDisplayedStatus = runtimeStatus;
-    Serial.printf("[DISPLAY] Water status: %s\n", runtimeStatus.c_str());
+    lastWaterDisplayedStatus = waterStatus;
+    Serial.printf("[DISPLAY] Water status: %s\n", waterStatus.c_str());
   }
-  drawStatusTextMarquee(runtimeStatus,
+  drawStatusTextMarquee(waterStatus,
                         WATER_STATUS_BOX_X,
                         WATER_STATUS_BOX_Y,
                         WATER_STATUS_BOX_W,
