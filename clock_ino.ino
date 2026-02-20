@@ -117,18 +117,12 @@ bool toiletOccupied = false;
 bool lastToiletOccupied = !toiletOccupied;
 
 unsigned long toiletDetectTime = 0;
-const unsigned long TOILET_DEBOUNCE_TIME = 3000;
-unsigned long toiletEmptyTime = 0;
-const unsigned long TOILET_EMPTY_DELAY = 2000;
-unsigned long toiletOccupancyStartTime = 0;
-const unsigned long TOILET_MIN_OCCUPANCY = 5000;
+const unsigned long TOILET_OCCUPY_CONFIRM_TIME = 15000;
 const unsigned long TOILET_SENSOR_STABLE_TIME = 350;
-const unsigned long TOILET_ENTRY_EXTRA_CONFIRM = 1200;
-const unsigned long TOILET_FLUSH_DELAY_BASE = 1800;
-const unsigned long TOILET_FLUSH_DELAY_MAX = 4500;
+const unsigned long TOILET_LEAVE_FLUSH_DELAY = 5000;
+bool toiletSignalStable = false;
 bool autoFlushPending = false;
 unsigned long autoFlushRequestedTime = 0;
-unsigned long autoFlushDelayMs = TOILET_FLUSH_DELAY_BASE;
 
 unsigned long waterStartTime = 0;
 const unsigned long WATER_TIMEOUT = 1800000;
@@ -625,12 +619,12 @@ void drawWaterControlScreen()
   tft.setTextSize(1);
   tft.drawString(angleStr, CENTER_X, 178);
 
-  tft.drawRoundRect(25, 198, 190, 20, 6, COLOR_GOLD_DARK);
-  tft.drawRoundRect(26, 199, 188, 18, 6, COLOR_GOLD);
+  tft.drawRoundRect(25, 186, 190, 20, 6, COLOR_GOLD_DARK);
+  tft.drawRoundRect(26, 187, 188, 18, 6, COLOR_GOLD);
   String waterStatus = buildRuntimeStatusLine();
   tft.setTextColor(COLOR_GOLD);
   tft.setTextSize(1);
-  tft.drawString(waterStatus, CENTER_X, 208);
+  tft.drawString(waterStatus, CENTER_X, 196);
   lastWaterDisplayedStatus = waterStatus;
   
   Serial.println("[DISPLAY] WATER SCREEN vẽ xong");
@@ -806,12 +800,12 @@ void updateWaterScreenElements()
 
   String waterStatus = buildRuntimeStatusLine();
   if (waterStatus != lastWaterDisplayedStatus) {
-    tft.fillRect(32, 202, 176, 12, COLOR_BLACK);
+    tft.fillRect(32, 190, 176, 12, COLOR_BLACK);
     delay(8);
     tft.setTextColor(COLOR_GOLD);
     tft.setTextSize(1);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(waterStatus, CENTER_X, 208);
+    tft.drawString(waterStatus, CENTER_X, 196);
     lastWaterDisplayedStatus = waterStatus;
     Serial.printf("[DISPLAY] Water status: %s\n", waterStatus.c_str());
   }
@@ -997,7 +991,7 @@ void processTemperatureCalibrationCommand(String command)
   }
 }
 
-bool detectToiletOccupancy(bool personPresent)
+bool detectToiletOccupancy()
 {
   static bool lastRawState = LOW;
   static bool stableState = LOW;
@@ -1012,82 +1006,70 @@ bool detectToiletOccupancy(bool personPresent)
   if (millis() - rawStateChangeTime >= TOILET_SENSOR_STABLE_TIME) {
     stableState = rawState;
   }
+  toiletSignalStable = stableState;
 
-  bool confidentPresence = personPresent || personDetected;
-  if (stableState && !toiletOccupied) {
+  if (!toiletOccupied) {
+    if (!stableState) {
+      // Mất tín hiệu trong lúc đếm xác nhận ngồi => reset bộ đếm về 0.
+      if (toiletDetectTime != 0) {
+        Serial.println("[TOILET] Reset dem ngoi (mat tin hieu)");
+      }
+      toiletDetectTime = 0;
+      return toiletOccupied;
+    }
+
+    // Chỉ xác nhận khi tín hiệu HIGH liên tục đủ 15 giây.
     if (toiletDetectTime == 0) {
       toiletDetectTime = millis();
+      Serial.println("[TOILET] Bat dau dem 15s xac nhan ngoi");
     }
-
-    unsigned long requiredConfirm = TOILET_DEBOUNCE_TIME;
-    if (!confidentPresence) {
-      requiredConfirm += TOILET_ENTRY_EXTRA_CONFIRM;
-    }
-
-    if (millis() - toiletDetectTime >= requiredConfirm) {
+    if (millis() - toiletDetectTime >= TOILET_OCCUPY_CONFIRM_TIME) {
       toiletOccupied = true;
-      toiletOccupancyStartTime = millis();
       toiletDetectTime = 0;
-      toiletEmptyTime = 0;
       autoFlushPending = false;
       Serial.println("[TOILET] ✓ Xác nhận người ngồi");
       return true;
     }
-  } else if (!stableState && toiletOccupied) {
-    if (toiletEmptyTime == 0) {
-      toiletEmptyTime = millis();
-    }
-
-    bool leftStable = (millis() - toiletEmptyTime >= TOILET_EMPTY_DELAY);
-    bool enoughOccupancy = (millis() - toiletOccupancyStartTime >= TOILET_MIN_OCCUPANCY);
-    if (leftStable && enoughOccupancy) {
-      toiletOccupied = false;
-      toiletEmptyTime = 0;
-
-      unsigned long occupiedDuration = millis() - toiletOccupancyStartTime;
-      unsigned long adaptiveDelay = TOILET_FLUSH_DELAY_BASE + (occupiedDuration / 12);
-      if (adaptiveDelay > TOILET_FLUSH_DELAY_MAX) {
-        adaptiveDelay = TOILET_FLUSH_DELAY_MAX;
-      }
-
-      autoFlushDelayMs = adaptiveDelay;
+  } else {
+    // Đã có người ngồi:
+    // - Mất tín hiệu => bắt đầu chờ 5s để xác nhận rời.
+    // - Có tín hiệu lại trong 5s => hủy chờ xả.
+    if (!stableState && !autoFlushPending) {
       autoFlushRequestedTime = millis();
       autoFlushPending = true;
-      Serial.printf("[TOILET] ► Xác nhận người rời, chờ xả %lu ms\n", autoFlushDelayMs);
-      return false;
-    }
-  } else {
-    if (stableState) {
-      toiletEmptyTime = 0;
-    } else {
-      toiletDetectTime = 0;
+      Serial.println("[TOILET] Mat tin hieu, dem 5s xac nhan roi");
+    } else if (stableState && autoFlushPending) {
+      autoFlushPending = false;
+      Serial.println("[TOILET] Tin hieu quay lai, huy xa");
     }
   }
 
   return toiletOccupied;
 }
 
-void processAutoFlush(bool personPresent)
+void processAutoFlush()
 {
   if (!autoFlushPending) {
     return;
   }
 
-  if (toiletOccupied) {
+  if (!toiletOccupied) {
     autoFlushPending = false;
     return;
   }
 
-  // Nếu còn người quanh toilet thì lùi thời điểm xả để tự nhiên hơn.
-  if (personPresent || personDetected) {
-    autoFlushRequestedTime = millis();
+  if (toiletSignalStable) {
+    // Có tín hiệu lại trong 5s => coi như chưa rời.
+    autoFlushPending = false;
     return;
   }
 
-  if (millis() - autoFlushRequestedTime >= autoFlushDelayMs) {
-    Serial.println("[TOILET] 🚽 Tự động xả");
+  if (millis() - autoFlushRequestedTime >= TOILET_LEAVE_FLUSH_DELAY) {
+    toiletOccupied = false;
+    autoFlushPending = false;
+    Serial.println("[TOILET] 🚽 Xac nhan roi 5s, tu dong xa");
     servoFlushTrigger();
-    autoFlushPending = false;
+    return;
   }
 }
 
@@ -1486,7 +1468,7 @@ void loop()
   
   currentTemp = readTemperatureWithCalib();
   bool personPresent = detectPerson();
-  detectToiletOccupancy(personPresent);
+  detectToiletOccupancy();
   
   processButtons();
   
@@ -1502,7 +1484,7 @@ void loop()
     }
   }
 
-  processAutoFlush(personPresent);
+  processAutoFlush();
   
   if (waterOn) {
     updateServo();
