@@ -542,11 +542,13 @@ void drawHomeScreen()
   tft.drawRoundRect(20, CENTER_Y + 24, 200, 24, 6, COLOR_GOLD_DARK);
   tft.drawRoundRect(21, CENTER_Y + 25, 198, 22, 6, COLOR_GOLD);
   String mergedStatus = buildHomeStatusLine();
+  String runtimeStatus = buildRuntimeStatusLine();
   
   tft.setTextColor(COLOR_GOLD);
   tft.setTextSize(1);
   tft.drawString(mergedStatus, CENTER_X, CENTER_Y + 36);
   lastHomeDisplayedStatus = mergedStatus;
+  Serial.println(String("[RUNTIME] ") + runtimeStatus);
   
   lastPersonDetected = personDetected;
   lastLightOn = lightOn;
@@ -619,13 +621,14 @@ void drawWaterControlScreen()
   tft.setTextSize(1);
   tft.drawString(angleStr, CENTER_X, 178);
 
-  tft.drawRoundRect(25, 186, 190, 20, 6, COLOR_GOLD_DARK);
-  tft.drawRoundRect(26, 187, 188, 18, 6, COLOR_GOLD);
-  String waterStatus = buildRuntimeStatusLine();
+  tft.drawRoundRect(50, 184, 140, 18, 5, COLOR_GOLD_DARK);
+  tft.drawRoundRect(51, 185, 138, 16, 5, COLOR_GOLD);
+  String runtimeStatus = buildRuntimeStatusLine();
   tft.setTextColor(COLOR_GOLD);
   tft.setTextSize(1);
-  tft.drawString(waterStatus, CENTER_X, 196);
-  lastWaterDisplayedStatus = waterStatus;
+  tft.drawString(runtimeStatus, CENTER_X, 193);
+  lastWaterDisplayedStatus = runtimeStatus;
+  Serial.println(String("[RUNTIME] ") + runtimeStatus);
   
   Serial.println("[DISPLAY] WATER SCREEN vẽ xong");
 }
@@ -668,6 +671,7 @@ void updateHomeScreenElements()
   
   // Cập nhật TRẠNG THÁI (mỗi khi thay đổi)
   String mergedStatus = buildHomeStatusLine();
+  String runtimeStatus = buildRuntimeStatusLine();
   bool statusChanged = (personDetected != lastPersonDetected || 
                        lightOn != lastLightOn || 
                        toiletOccupied != lastToiletOccupied || 
@@ -684,6 +688,7 @@ void updateHomeScreenElements()
     tft.drawString(mergedStatus, CENTER_X, CENTER_Y + 36);
     
     Serial.printf("[DISPLAY] Status: %s\n", mergedStatus.c_str());
+    Serial.println(String("[RUNTIME] ") + runtimeStatus);
     
     lastPersonDetected = personDetected;
     lastLightOn = lightOn;
@@ -798,16 +803,17 @@ void updateWaterScreenElements()
     Serial.printf("[DISPLAY] Servo angle: %d°\n", servoAngle);
   }
 
-  String waterStatus = buildRuntimeStatusLine();
-  if (waterStatus != lastWaterDisplayedStatus) {
-    tft.fillRect(32, 190, 176, 12, COLOR_BLACK);
+  String runtimeStatus = buildRuntimeStatusLine();
+  if (runtimeStatus != lastWaterDisplayedStatus) {
+    tft.fillRect(58, 188, 124, 10, COLOR_BLACK);
     delay(8);
     tft.setTextColor(COLOR_GOLD);
     tft.setTextSize(1);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(waterStatus, CENTER_X, 196);
-    lastWaterDisplayedStatus = waterStatus;
-    Serial.printf("[DISPLAY] Water status: %s\n", waterStatus.c_str());
+    tft.drawString(runtimeStatus, CENTER_X, 193);
+    lastWaterDisplayedStatus = runtimeStatus;
+    Serial.printf("[DISPLAY] Water status: %s\n", runtimeStatus.c_str());
+    Serial.println(String("[RUNTIME] ") + runtimeStatus);
   }
 
   drawCircleBorder(COLOR_ORANGE);
