@@ -53,7 +53,6 @@ const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 7 * 3600;
 const int daylightOffset_sec = 0;
 String statusLine = "IP: CHUA KET NOI";
-bool networkConnectedAtStartup = false;
 
 // ================== GPIO ==================
 #define RELAY_PIN 8
@@ -82,7 +81,8 @@ float lastDisplayedCurrentTemp = -999.0;
 float setTemp = 25.0;
 float lastDisplayedSetTemp = -999.0;
 float initialWaterTemp = 25.0;  // Lưu nhiệt độ ban đầu khi bật nước
-float relaySetTempBase = 25.0;  // Mốc setTemp khi relay vừa bật
+const float SET_TEMP_MIN = 15.0f;
+const float SET_TEMP_MAX = 45.0f;
 
 int lastMinute = -1;
 int lastHour = -1;
@@ -177,57 +177,30 @@ String buildRuntimeStatusLine()
   return runtimeStatus;
 }
 
+String buildDisplayStatusLine()
+{
+  String compactRuntime = "";
+  if (personDetected) compactRuntime += "N";
+  if (lightOn) compactRuntime += (compactRuntime.length() > 0 ? "|DEN" : "DEN");
+  if (toiletOccupied) compactRuntime += (compactRuntime.length() > 0 ? "|WC" : "WC");
+  if (waterOn) compactRuntime += (compactRuntime.length() > 0 ? "|NUOC" : "NUOC");
+  if (compactRuntime.length() == 0) compactRuntime = "READY";
+
+  String merged = "ST:" + compactRuntime + "  " + statusLine;
+  if (merged.length() > 34) {
+    // Ưu tiên giữ đầy đủ thông tin IP trên cùng một dòng status.
+    merged = statusLine;
+  }
+  return merged;
+}
+
 void refreshNetworkStatusLine()
 {
-  networkConnectedAtStartup = (WiFi.status() == WL_CONNECTED);
-  if (networkConnectedAtStartup) {
+  if (WiFi.status() == WL_CONNECTED) {
     statusLine = "IP: " + WiFi.localIP().toString();
   } else {
     statusLine = "IP: CHUA KET NOI";
   }
-}
-
-void drawNetworkPanel(bool forceRedraw = false)
-{
-  static String lastStatusLine = "";
-  static bool lastConnectedState = false;
-
-  bool connected = networkConnectedAtStartup;
-  String ipLine = statusLine;
-  if (ipLine.length() == 0) {
-    ipLine = "IP: CHUA KET NOI";
-  }
-
-  if (!forceRedraw && ipLine == lastStatusLine && connected == lastConnectedState) {
-    return;
-  }
-
-  const int panelX = 12;
-  const int panelY = 198;
-  const int panelW = 216;
-  const int panelH = 30;
-
-  tft.fillRect(panelX, panelY, panelW, panelH, COLOR_BLACK);
-  tft.drawRect(panelX, panelY, panelW, panelH, COLOR_GOLD_DARK);
-  tft.drawRect(panelX + 1, panelY + 1, panelW - 2, panelH - 2, COLOR_GOLD);
-
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextSize(1);
-  tft.setTextColor(COLOR_GOLD);
-  tft.drawString("NETWORK", panelX + 8, panelY + 4);
-
-  tft.setTextDatum(TR_DATUM);
-  tft.setTextColor(connected ? COLOR_GOLD : COLOR_ORANGE);
-  tft.drawString(connected ? "ONLINE" : "OFFLINE", panelX + panelW - 8, panelY + 4);
-
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(COLOR_WHITE);
-  tft.drawString(ipLine, panelX + 8, panelY + 16);
-
-  tft.setTextDatum(MC_DATUM);
-
-  lastStatusLine = ipLine;
-  lastConnectedState = connected;
 }
 
 // ================== CALIBRATION MODE ==================
@@ -545,6 +518,7 @@ void drawHomeScreen()
 {
   tft.fillScreen(COLOR_BLACK);
   drawCircleBorder(COLOR_GOLD);
+  drawCircleBorder(COLOR_GOLD_DARK);
   
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) return;
@@ -567,11 +541,13 @@ void drawHomeScreen()
   
   lastDay = timeinfo.tm_mday;
   
-  String runtimeStatus = buildRuntimeStatusLine();
+  tft.drawRoundRect(20, CENTER_Y + 24, 200, 24, 6, COLOR_GOLD_DARK);
+  tft.drawRoundRect(21, CENTER_Y + 25, 198, 22, 6, COLOR_GOLD);
+  String mergedStatus = buildDisplayStatusLine();
   
-  tft.setTextColor(COLOR_WHITE);
+  tft.setTextColor(COLOR_GOLD);
   tft.setTextSize(1);
-  tft.drawString(runtimeStatus, CENTER_X, CENTER_Y + 35);
+  tft.drawString(mergedStatus, CENTER_X, CENTER_Y + 36);
   
   lastPersonDetected = personDetected;
   lastLightOn = lightOn;
@@ -582,12 +558,9 @@ void drawHomeScreen()
     tft.setTextColor(COLOR_CYAN);
     char waterStatusBuf[30];
     sprintf(waterStatusBuf, "NUOC: %.1f C", currentTemp);
-    tft.drawString(waterStatusBuf, CENTER_X, CENTER_Y + 52);
+    tft.drawString(waterStatusBuf, CENTER_X, CENTER_Y + 60);
     lastDisplayedCurrentTemp = currentTemp;
   }
-
-  drawNetworkPanel(true);
-  drawCircleBorder(COLOR_GOLD);
   
   Serial.println("[DISPLAY] HOME SCREEN vẽ xong");
 }
@@ -601,6 +574,7 @@ void drawWaterControlScreen()
   tft.setTextColor(COLOR_ORANGE);
   tft.setTextSize(2);
   tft.drawString("WATER", CENTER_X, 30);
+  tft.drawFastHLine(45, 44, 150, COLOR_GOLD_DARK);
   
   tft.setTextColor(COLOR_WHITE);
   tft.setTextSize(1);
@@ -614,12 +588,12 @@ void drawWaterControlScreen()
   tft.setTextSize(1);
   tft.drawString("C", CENTER_X - 10, 105);
   
-  tft.setTextColor(COLOR_YELLOW);
+  tft.setTextColor(COLOR_GOLD);
   tft.setTextSize(1);
   tft.drawString("SET", CENTER_X + 40, 70);
   
   dtostrf(setTemp, 4, 1, tempBuf);
-  tft.setTextColor(COLOR_YELLOW);
+  tft.setTextColor(COLOR_GOLD);
   tft.setTextSize(2);
   tft.drawString(tempBuf, CENTER_X + 35, 95);
   tft.setTextSize(1);
@@ -645,9 +619,6 @@ void drawWaterControlScreen()
   tft.setTextColor(COLOR_CYAN);
   tft.setTextSize(1);
   tft.drawString(angleStr, CENTER_X, 178);
-
-  drawNetworkPanel(true);
-  drawCircleBorder(COLOR_ORANGE);
   
   Serial.println("[DISPLAY] WATER SCREEN vẽ xong");
 }
@@ -689,33 +660,36 @@ void updateHomeScreenElements()
   }
   
   // Cập nhật TRẠNG THÁI (mỗi khi thay đổi)
+  static String lastDisplayedStatusLine = "";
+  String mergedStatus = buildDisplayStatusLine();
+  bool networkStatusChanged = (mergedStatus != lastDisplayedStatusLine);
   bool statusChanged = (personDetected != lastPersonDetected || 
                        lightOn != lastLightOn || 
                        toiletOccupied != lastToiletOccupied || 
-                       waterOn != lastWaterOn);
+                       waterOn != lastWaterOn ||
+                       networkStatusChanged);
   
   if (statusChanged) {
-    tft.fillRect(45, CENTER_Y + 28, 150, 16, COLOR_BLACK);
+    tft.fillRect(25, CENTER_Y + 30, 190, 14, COLOR_BLACK);
     delay(15);
     
-    String runtimeStatus = buildRuntimeStatusLine();
-    
-    tft.setTextColor(COLOR_WHITE);
+    tft.setTextColor(COLOR_GOLD);
     tft.setTextSize(1);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(runtimeStatus, CENTER_X, CENTER_Y + 35);
+    tft.drawString(mergedStatus, CENTER_X, CENTER_Y + 36);
     
-    Serial.printf("[DISPLAY] Status: %s\n", runtimeStatus.c_str());
+    Serial.printf("[DISPLAY] Status: %s\n", mergedStatus.c_str());
     
     lastPersonDetected = personDetected;
     lastLightOn = lightOn;
     lastToiletOccupied = toiletOccupied;
     lastWaterOn = waterOn;
+    lastDisplayedStatusLine = mergedStatus;
   }
   
   // Cập nhật NHIỆT ĐỘ NƯỚC (mỗi 0.5°C thay đổi)
   if (waterOn && fabs(currentTemp - lastDisplayedCurrentTemp) > 0.5) {
-    tft.fillRect(45, CENTER_Y + 45, 150, 16, COLOR_BLACK);
+    tft.fillRect(45, CENTER_Y + 53, 150, 16, COLOR_BLACK);
     delay(10);
     
     tft.setTextColor(COLOR_CYAN);
@@ -723,13 +697,12 @@ void updateHomeScreenElements()
     tft.setTextDatum(MC_DATUM);
     char waterStatusBuf[30];
     sprintf(waterStatusBuf, "NUOC: %.1f C", currentTemp);
-    tft.drawString(waterStatusBuf, CENTER_X, CENTER_Y + 52);
+    tft.drawString(waterStatusBuf, CENTER_X, CENTER_Y + 60);
     
     lastDisplayedCurrentTemp = currentTemp;
     Serial.printf("[DISPLAY] Cập nhật nhiệt độ: %.1f°C\n", currentTemp);
   }
-
-  drawNetworkPanel();
+  drawCircleBorder(COLOR_GOLD_DARK);
   drawCircleBorder(COLOR_GOLD);
 }
 
@@ -761,7 +734,7 @@ void updateWaterScreenElements()
     
     char tempBuf[10];
     dtostrf(setTemp, 4, 1, tempBuf);
-    tft.setTextColor(COLOR_YELLOW);
+    tft.setTextColor(COLOR_GOLD);
     tft.setTextSize(2);
     tft.setTextDatum(MC_DATUM);
     tft.drawString(tempBuf, CENTER_X + 35, 95);
@@ -820,7 +793,6 @@ void updateWaterScreenElements()
     Serial.printf("[DISPLAY] Servo angle: %d°\n", servoAngle);
   }
 
-  drawNetworkPanel();
   drawCircleBorder(COLOR_ORANGE);
 }
 
@@ -1049,17 +1021,14 @@ void relayControl(bool state)
     // Lưu nhiệt độ ban đầu
     initialWaterTemp = readTemperatureWithCalib();
     
-    // Giữ setTemp đã cài trước đó, nhưng không thấp hơn nhiệt độ ban đầu
-    // khi relay bật và không vượt quá 45°C.
-    float preservedSetTemp = setTemp;
-    if (preservedSetTemp < initialWaterTemp) {
-      preservedSetTemp = initialWaterTemp;
+    // Giữ nguyên setTemp đã cài trước đó trong WATER mode.
+    // Chỉ giới hạn trong biên an toàn min/max.
+    if (setTemp < SET_TEMP_MIN) {
+      setTemp = SET_TEMP_MIN;
     }
-    if (preservedSetTemp > 45.0f) {
-      preservedSetTemp = 45.0f;
+    if (setTemp > SET_TEMP_MAX) {
+      setTemp = SET_TEMP_MAX;
     }
-    setTemp = preservedSetTemp;
-    relaySetTempBase = setTemp;
     lastDisplayedSetTemp = -999.0;
     lastDisplayedCurrentTemp = -999.0;
     
@@ -1072,8 +1041,8 @@ void relayControl(bool state)
     servoState.lastUpdateTime = millis();
     
     Serial.printf("[WATER] Lưu nhiệt độ ban đầu: %.1f°C\n", initialWaterTemp);
-    Serial.printf("[WATER] Giữ setTemp khi bật relay: %.1f°C\n", setTemp);
-    Serial.printf("[WATER] setTemp range (relay ON): %.1f°C - 45.0°C\n", relaySetTempBase);
+    Serial.printf("[WATER] Giữ setTemp đã cài: %.1f°C\n", setTemp);
+    Serial.printf("[WATER] setTemp range: %.1f°C - %.1f°C\n", SET_TEMP_MIN, SET_TEMP_MAX);
     Serial.printf("[WATER] waterStartTime: %lu ms\n", waterStartTime);
   } else {
     // TAT NUOC - servo về 0° rồi quay về home
@@ -1094,43 +1063,43 @@ void relayControl(bool state)
 // ================== XỬ LÝ SET TEMPERATURE ==================
 /*
  * Điều chỉnh setTemp:
- * - MIN: relaySetTempBase (setTemp tại thời điểm relay bật)
- * - MAX: 45.0°C
+ * - MIN: SET_TEMP_MIN
+ * - MAX: SET_TEMP_MAX
  * - Bước: 0.5°C
  */
 // ================== ĐIỀU CHỈNH NHIỆT ĐỘ ===================
 /*
  * Tăng/Giảm setTemp với giới hạn:
- * - MIN: relaySetTempBase (setTemp tại thời điểm relay bật)
- * - MAX: 45.0°C
+ * - MIN: SET_TEMP_MIN
+ * - MAX: SET_TEMP_MAX
  * - Bước: 0.5°C
  */
 
 void increaseSetTemp()
 {
-  // Tăng nhiệt độ, giới hạn tối đa 45.0°C
-  if (setTemp < 45.0) {
+  // Tăng nhiệt độ, giới hạn tối đa theo SET_TEMP_MAX
+  if (setTemp < SET_TEMP_MAX) {
     setTemp += 0.5;
-    if (setTemp > 45.0) {
-      setTemp = 45.0;
+    if (setTemp > SET_TEMP_MAX) {
+      setTemp = SET_TEMP_MAX;
     }
-    Serial.printf("[BUTTON-UP] ✓ Tăng setTemp → %.1f°C (max: 45.0°C)\n", setTemp);
+    Serial.printf("[BUTTON-UP] ✓ Tăng setTemp → %.1f°C (max: %.1f°C)\n", setTemp, SET_TEMP_MAX);
   } else {
-    Serial.println("[BUTTON-UP] ⚠ Đã đạt nhiệt độ tối đa: 45.0°C");
+    Serial.printf("[BUTTON-UP] ⚠ Đã đạt nhiệt độ tối đa: %.1f°C\n", SET_TEMP_MAX);
   }
 }
 
 void decreaseSetTemp()
 {
-  // Giảm nhiệt độ, giới hạn tối thiểu = mốc setTemp khi relay bật
-  if (setTemp > relaySetTempBase) {
+  // Giảm nhiệt độ, giới hạn tối thiểu theo SET_TEMP_MIN
+  if (setTemp > SET_TEMP_MIN) {
     setTemp -= 0.5;
-    if (setTemp < relaySetTempBase) {
-      setTemp = relaySetTempBase;
+    if (setTemp < SET_TEMP_MIN) {
+      setTemp = SET_TEMP_MIN;
     }
-    Serial.printf("[BUTTON-DOWN] ✓ Giảm setTemp → %.1f°C (min: %.1f°C)\n", setTemp, relaySetTempBase);
+    Serial.printf("[BUTTON-DOWN] ✓ Giảm setTemp → %.1f°C (min: %.1f°C)\n", setTemp, SET_TEMP_MIN);
   } else {
-    Serial.printf("[BUTTON-DOWN] ⚠ Đã đạt nhiệt độ tối thiểu: %.1f°C\n", relaySetTempBase);
+    Serial.printf("[BUTTON-DOWN] ⚠ Đã đạt nhiệt độ tối thiểu: %.1f°C\n", SET_TEMP_MIN);
   }
 }
 
@@ -1253,8 +1222,8 @@ void processButtons()
     buttonWaterHeld = false;
   }
   
-  // ===== NÚT UP - TĂNG NHIỆT ĐỊ (chỉ khi ở WATER MODE) =====
-  if (currentMode == WATER_CONTROL_MODE && waterOn && digitalRead(BUTTON_UP_PIN) == HIGH) {
+  // ===== NÚT UP - TĂNG NHIỆT ĐỊ (WATER MODE: trước/sau relay đều chỉnh được) =====
+  if (currentMode == WATER_CONTROL_MODE && digitalRead(BUTTON_UP_PIN) == HIGH) {
     if (millis() - lastUpButtonTime >= REPEAT_DELAY) {
       increaseSetTemp();
       Serial.printf("[BUTTON-UP] Tăng setTemp → %.1f°C\n", setTemp);
@@ -1266,8 +1235,8 @@ void processButtons()
     lastUpButtonTime = 0;
   }
   
-  // ===== NÚT DOWN - GIẢM NHIỆT ĐỘ (chỉ khi ở WATER MODE) =====
-  if (currentMode == WATER_CONTROL_MODE && waterOn && digitalRead(BUTTON_DOWN_PIN) == HIGH) {
+  // ===== NÚT DOWN - GIẢM NHIỆT ĐỘ (WATER MODE: trước/sau relay đều chỉnh được) =====
+  if (currentMode == WATER_CONTROL_MODE && digitalRead(BUTTON_DOWN_PIN) == HIGH) {
     if (millis() - lastDownButtonTime >= REPEAT_DELAY) {
       decreaseSetTemp();
       Serial.printf("[BUTTON-DOWN] Giảm setTemp → %.1f°C\n", setTemp);
@@ -1386,6 +1355,7 @@ void loop()
 {
  
    iot47_wifi_ota_loop();
+  refreshNetworkStatusLine();
  
  
   // Kiểm tra lệnh Serial
