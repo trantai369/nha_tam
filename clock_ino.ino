@@ -165,10 +165,28 @@ void IRAM_ATTR handleButtonDown() {
 #define COLOR_CYAN 0x07FF
 #define COLOR_GOLD 0xFEA0
 #define COLOR_GOLD_DARK 0x8B40
+#define HOME_STATUS_BOX_X 20
+#define HOME_STATUS_BOX_Y (CENTER_Y + 24)
+#define HOME_STATUS_BOX_W 200
+#define HOME_STATUS_BOX_H 24
+#define WATER_STATUS_BOX_X 60
+#define WATER_STATUS_BOX_Y 184
+#define WATER_STATUS_BOX_W 120
+#define WATER_STATUS_BOX_H 16
 
 void drawCircleBorder(uint16_t color) {
   tft.drawCircle(CENTER_X, CENTER_Y, CIRCLE_RADIUS, color);
 }
+
+struct StatusMarqueeState {
+  String text;
+  int offset;
+  unsigned long lastStepMs;
+};
+
+StatusMarqueeState homeStatusMarquee = {"", 0, 0};
+StatusMarqueeState waterStatusMarquee = {"", 0, 0};
+String lastRuntimeStatusSerial = "";
 
 String buildRuntimeStatusLine()
 {
@@ -187,6 +205,80 @@ String buildHomeStatusLine()
     return statusLine;
   }
   return buildRuntimeStatusLine();
+}
+
+void publishRuntimeStatusUpdate()
+{
+  String runtimeStatus = buildRuntimeStatusLine();
+  if (runtimeStatus != lastRuntimeStatusSerial) {
+    Serial.println(String("[RUNTIME] ") + runtimeStatus);
+    lastRuntimeStatusSerial = runtimeStatus;
+  }
+}
+
+bool drawStatusTextMarquee(const String& text,
+                           int boxX,
+                           int boxY,
+                           int boxW,
+                           int boxH,
+                           uint16_t textColor,
+                           StatusMarqueeState& state,
+                           bool forceReset = false)
+{
+  const int padding = 4;
+  const int charWidth = 6;
+  const int charHeight = 8;
+  const unsigned long stepIntervalMs = 180;
+
+  int innerX = boxX + padding;
+  int innerY = boxY + (boxH - charHeight) / 2;
+  int innerW = boxW - (padding * 2);
+  int maxChars = innerW / charWidth;
+  if (maxChars < 1) {
+    return false;
+  }
+
+  bool changed = forceReset || (text != state.text);
+  if (changed) {
+    state.text = text;
+    state.offset = 0;
+    state.lastStepMs = millis();
+  }
+
+  bool needStep = false;
+  bool isLong = ((int)text.length() > maxChars);
+  unsigned long now = millis();
+  if (isLong && (now - state.lastStepMs >= stepIntervalMs)) {
+    int cycleLen = text.length() + 3;
+    state.offset++;
+    if (state.offset >= cycleLen) {
+      state.offset = 0;
+    }
+    state.lastStepMs = now;
+    needStep = true;
+  }
+
+  if (!changed && !needStep) {
+    return false;
+  }
+
+  tft.fillRect(innerX, innerY, innerW, charHeight, COLOR_BLACK);
+  tft.setTextColor(textColor);
+  tft.setTextSize(1);
+
+  if (!isLong) {
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(text, boxX + boxW / 2, boxY + boxH / 2);
+    tft.setTextDatum(MC_DATUM);
+    return true;
+  }
+
+  String loopText = text + "   " + text;
+  String visible = loopText.substring(state.offset, state.offset + maxChars);
+  tft.setTextDatum(TL_DATUM);
+  tft.drawString(visible, innerX, innerY);
+  tft.setTextDatum(MC_DATUM);
+  return true;
 }
 
 void refreshNetworkStatusLine()
@@ -539,16 +631,18 @@ void drawHomeScreen()
     homeStatusShowIpUntil = millis() + 5000;
   }
   
-  tft.drawRoundRect(20, CENTER_Y + 24, 200, 24, 6, COLOR_GOLD_DARK);
-  tft.drawRoundRect(21, CENTER_Y + 25, 198, 22, 6, COLOR_GOLD);
+  tft.drawRoundRect(HOME_STATUS_BOX_X, HOME_STATUS_BOX_Y, HOME_STATUS_BOX_W, HOME_STATUS_BOX_H, 6, COLOR_GOLD_DARK);
+  tft.drawRoundRect(HOME_STATUS_BOX_X + 1, HOME_STATUS_BOX_Y + 1, HOME_STATUS_BOX_W - 2, HOME_STATUS_BOX_H - 2, 6, COLOR_GOLD);
   String mergedStatus = buildHomeStatusLine();
-  String runtimeStatus = buildRuntimeStatusLine();
-  
-  tft.setTextColor(COLOR_GOLD);
-  tft.setTextSize(1);
-  tft.drawString(mergedStatus, CENTER_X, CENTER_Y + 36);
+  drawStatusTextMarquee(mergedStatus,
+                        HOME_STATUS_BOX_X,
+                        HOME_STATUS_BOX_Y,
+                        HOME_STATUS_BOX_W,
+                        HOME_STATUS_BOX_H,
+                        COLOR_GOLD,
+                        homeStatusMarquee,
+                        true);
   lastHomeDisplayedStatus = mergedStatus;
-  Serial.println(String("[RUNTIME] ") + runtimeStatus);
   
   lastPersonDetected = personDetected;
   lastLightOn = lightOn;
@@ -621,14 +715,18 @@ void drawWaterControlScreen()
   tft.setTextSize(1);
   tft.drawString(angleStr, CENTER_X, 178);
 
-  tft.drawRoundRect(50, 184, 140, 18, 5, COLOR_GOLD_DARK);
-  tft.drawRoundRect(51, 185, 138, 16, 5, COLOR_GOLD);
+  tft.drawRoundRect(WATER_STATUS_BOX_X, WATER_STATUS_BOX_Y, WATER_STATUS_BOX_W, WATER_STATUS_BOX_H, 5, COLOR_GOLD_DARK);
+  tft.drawRoundRect(WATER_STATUS_BOX_X + 1, WATER_STATUS_BOX_Y + 1, WATER_STATUS_BOX_W - 2, WATER_STATUS_BOX_H - 2, 5, COLOR_GOLD);
   String runtimeStatus = buildRuntimeStatusLine();
-  tft.setTextColor(COLOR_GOLD);
-  tft.setTextSize(1);
-  tft.drawString(runtimeStatus, CENTER_X, 193);
+  drawStatusTextMarquee(runtimeStatus,
+                        WATER_STATUS_BOX_X,
+                        WATER_STATUS_BOX_Y,
+                        WATER_STATUS_BOX_W,
+                        WATER_STATUS_BOX_H,
+                        COLOR_GOLD,
+                        waterStatusMarquee,
+                        true);
   lastWaterDisplayedStatus = runtimeStatus;
-  Serial.println(String("[RUNTIME] ") + runtimeStatus);
   
   Serial.println("[DISPLAY] WATER SCREEN vẽ xong");
 }
@@ -671,7 +769,6 @@ void updateHomeScreenElements()
   
   // Cập nhật TRẠNG THÁI (mỗi khi thay đổi)
   String mergedStatus = buildHomeStatusLine();
-  String runtimeStatus = buildRuntimeStatusLine();
   bool statusChanged = (personDetected != lastPersonDetected || 
                        lightOn != lastLightOn || 
                        toiletOccupied != lastToiletOccupied || 
@@ -679,22 +776,29 @@ void updateHomeScreenElements()
                        mergedStatus != lastHomeDisplayedStatus);
   
   if (statusChanged) {
-    tft.fillRect(25, CENTER_Y + 30, 190, 14, COLOR_BLACK);
-    delay(15);
-    
-    tft.setTextColor(COLOR_GOLD);
-    tft.setTextSize(1);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(mergedStatus, CENTER_X, CENTER_Y + 36);
-    
+    drawStatusTextMarquee(mergedStatus,
+                          HOME_STATUS_BOX_X,
+                          HOME_STATUS_BOX_Y,
+                          HOME_STATUS_BOX_W,
+                          HOME_STATUS_BOX_H,
+                          COLOR_GOLD,
+                          homeStatusMarquee,
+                          true);
     Serial.printf("[DISPLAY] Status: %s\n", mergedStatus.c_str());
-    Serial.println(String("[RUNTIME] ") + runtimeStatus);
     
     lastPersonDetected = personDetected;
     lastLightOn = lightOn;
     lastToiletOccupied = toiletOccupied;
     lastWaterOn = waterOn;
     lastHomeDisplayedStatus = mergedStatus;
+  } else {
+    drawStatusTextMarquee(mergedStatus,
+                          HOME_STATUS_BOX_X,
+                          HOME_STATUS_BOX_Y,
+                          HOME_STATUS_BOX_W,
+                          HOME_STATUS_BOX_H,
+                          COLOR_GOLD,
+                          homeStatusMarquee);
   }
   
   // Cập nhật NHIỆT ĐỘ NƯỚC (mỗi 0.5°C thay đổi)
@@ -804,17 +908,19 @@ void updateWaterScreenElements()
   }
 
   String runtimeStatus = buildRuntimeStatusLine();
-  if (runtimeStatus != lastWaterDisplayedStatus) {
-    tft.fillRect(58, 188, 124, 10, COLOR_BLACK);
-    delay(8);
-    tft.setTextColor(COLOR_GOLD);
-    tft.setTextSize(1);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(runtimeStatus, CENTER_X, 193);
+  bool waterStatusChanged = (runtimeStatus != lastWaterDisplayedStatus);
+  if (waterStatusChanged) {
     lastWaterDisplayedStatus = runtimeStatus;
     Serial.printf("[DISPLAY] Water status: %s\n", runtimeStatus.c_str());
-    Serial.println(String("[RUNTIME] ") + runtimeStatus);
   }
+  drawStatusTextMarquee(runtimeStatus,
+                        WATER_STATUS_BOX_X,
+                        WATER_STATUS_BOX_Y,
+                        WATER_STATUS_BOX_W,
+                        WATER_STATUS_BOX_H,
+                        COLOR_GOLD,
+                        waterStatusMarquee,
+                        waterStatusChanged);
 
   drawCircleBorder(COLOR_ORANGE);
 }
@@ -1406,6 +1512,7 @@ void setup()
   
   currentTemp = readTemperatureWithCalib();
   Serial.printf("[TEMP] Khởi tạo: %.1f°C\n", currentTemp);
+  publishRuntimeStatusUpdate();
   
   lastActivityTime = millis();
   screenOn = true;
@@ -1491,6 +1598,7 @@ void loop()
   }
 
   processAutoFlush();
+  publishRuntimeStatusUpdate();
   
   if (waterOn) {
     updateServo();
