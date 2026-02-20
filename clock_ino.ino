@@ -52,6 +52,7 @@ const char* password = "147258369";
 const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 7 * 3600;
 const int daylightOffset_sec = 0;
+String statusLine = "IP: CHUA KET NOI";
 
 // ================== GPIO ==================
 #define RELAY_PIN 8
