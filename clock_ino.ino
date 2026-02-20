@@ -21,6 +21,7 @@
 #include <WiFi.h>
 #include "time.h"
 #include <ESP32Servo.h>
+#include <stdarg.h>
 
 //#include "ESP8266WiFi.h"//
 //#include "PubSubClient.h"//
@@ -172,6 +173,9 @@ void IRAM_ATTR handleButtonDown() {
 #define WATER_STATUS_BOX_Y 184
 #define WATER_STATUS_BOX_W 120
 #define WATER_STATUS_BOX_H 16
+#define STATUS_MARQUEE_STEP_MS 180
+#define TFT_SERIAL_QUEUE_SIZE 80
+#define TFT_SERIAL_MIN_HOLD_MS 1200
 
 void drawCircleBorder(uint16_t color) {
   tft.drawCircle(CENTER_X, CENTER_Y, CIRCLE_RADIUS, color);
@@ -187,6 +191,165 @@ StatusMarqueeState homeStatusMarquee = {"", 0, 0};
 StatusMarqueeState waterStatusMarquee = {"", 0, 0};
 String lastRuntimeStatusSerial = "";
 String lastFullStatusSerial = "";
+String tftSerialQueue[TFT_SERIAL_QUEUE_SIZE];
+int tftSerialQueueHead = 0;
+int tftSerialQueueCount = 0;
+String serialMirrorPartialLine = "";
+String currentTftSerialLine = "";
+unsigned long currentTftSerialLineSince = 0;
+
+void enqueueTftSerialLine(const String& line)
+{
+  String sanitized = line;
+  sanitized.replace("\r", "");
+  if (sanitized.length() == 0) {
+    return;
+  }
+
+  if (tftSerialQueueCount >= TFT_SERIAL_QUEUE_SIZE) {
+    tftSerialQueueHead = (tftSerialQueueHead + 1) % TFT_SERIAL_QUEUE_SIZE;
+    tftSerialQueueCount--;
+  }
+
+  int writeIdx = (tftSerialQueueHead + tftSerialQueueCount) % TFT_SERIAL_QUEUE_SIZE;
+  tftSerialQueue[writeIdx] = sanitized;
+  tftSerialQueueCount++;
+}
+
+bool popTftSerialLine(String& lineOut)
+{
+  if (tftSerialQueueCount <= 0) {
+    return false;
+  }
+  lineOut = tftSerialQueue[tftSerialQueueHead];
+  tftSerialQueueHead = (tftSerialQueueHead + 1) % TFT_SERIAL_QUEUE_SIZE;
+  tftSerialQueueCount--;
+  return true;
+}
+
+void appendSerialMirrorChunk(const String& chunk, bool forceNewline)
+{
+  for (unsigned int i = 0; i < chunk.length(); i++) {
+    char c = chunk[i];
+    if (c == '\r') {
+      continue;
+    }
+    if (c == '\n') {
+      enqueueTftSerialLine(serialMirrorPartialLine);
+      serialMirrorPartialLine = "";
+    } else {
+      serialMirrorPartialLine += c;
+    }
+  }
+
+  if (forceNewline) {
+    enqueueTftSerialLine(serialMirrorPartialLine);
+    serialMirrorPartialLine = "";
+  }
+}
+
+void tickTftSerialLine()
+{
+  if (currentTftSerialLine.length() == 0) {
+    String nextLine = "";
+    if (popTftSerialLine(nextLine)) {
+      currentTftSerialLine = nextLine;
+      currentTftSerialLineSince = millis();
+    } else {
+      return;
+    }
+  }
+
+  int maxChars = (WATER_STATUS_BOX_W - 8) / 6;
+  if (maxChars < 1) {
+    maxChars = 1;
+  }
+  bool isLong = ((int)currentTftSerialLine.length() > maxChars);
+  unsigned long requiredMs = TFT_SERIAL_MIN_HOLD_MS;
+  if (isLong) {
+    requiredMs = ((currentTftSerialLine.length() + 3) * STATUS_MARQUEE_STEP_MS) + 300;
+  }
+
+  if (millis() - currentTftSerialLineSince >= requiredMs && tftSerialQueueCount > 0) {
+    String nextLine = "";
+    if (popTftSerialLine(nextLine)) {
+      currentTftSerialLine = nextLine;
+      currentTftSerialLineSince = millis();
+    }
+  }
+}
+
+String getCurrentTftSerialLine()
+{
+  if (currentTftSerialLine.length() == 0) {
+    String nextLine = "";
+    if (popTftSerialLine(nextLine)) {
+      currentTftSerialLine = nextLine;
+      currentTftSerialLineSince = millis();
+    }
+  }
+  return currentTftSerialLine;
+}
+
+class MirrorSerialStream {
+public:
+  explicit MirrorSerialStream(HardwareSerial& serial) : serial_(serial) {}
+
+  void begin(unsigned long baud) {
+    serial_.begin(baud);
+  }
+
+  void begin(unsigned long baud, uint32_t config) {
+    serial_.begin(baud, config);
+  }
+
+  int available() {
+    return serial_.available();
+  }
+
+  int read() {
+    return serial_.read();
+  }
+
+  String readStringUntil(char terminator) {
+    return serial_.readStringUntil(terminator);
+  }
+
+  template <typename T>
+  size_t print(const T& value) {
+    appendSerialMirrorChunk(String(value), false);
+    return serial_.print(value);
+  }
+
+  template <typename T>
+  size_t println(const T& value) {
+    appendSerialMirrorChunk(String(value), true);
+    return serial_.println(value);
+  }
+
+  size_t println() {
+    appendSerialMirrorChunk("", true);
+    return serial_.println();
+  }
+
+  int printf(const char* format, ...) {
+    char buffer[256];
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    serial_.print(buffer);
+    appendSerialMirrorChunk(String(buffer), false);
+    return n;
+  }
+
+private:
+  HardwareSerial& serial_;
+};
+
+HardwareSerial& serialHw = ::Serial;
+MirrorSerialStream SerialMirror(serialHw);
+#define Serial SerialMirror
 
 String buildRuntimeStatusLine()
 {
@@ -199,7 +362,7 @@ String buildRuntimeStatusLine()
   return runtimeStatus;
 }
 
-String buildHomeStatusLine()
+String buildSystemStatusLine()
 {
   String fullStatus = "MODE:";
   fullStatus += (currentMode == HOME_MODE) ? "HOME" : "WATER";
@@ -216,10 +379,19 @@ String buildHomeStatusLine()
   return fullStatus;
 }
 
+String buildHomeStatusLine()
+{
+  String mirroredSerial = getCurrentTftSerialLine();
+  if (mirroredSerial.length() > 0) {
+    return mirroredSerial;
+  }
+  return buildSystemStatusLine();
+}
+
 void publishRuntimeStatusUpdate()
 {
   String runtimeStatus = buildRuntimeStatusLine();
-  String fullStatus = buildHomeStatusLine();
+  String fullStatus = buildSystemStatusLine();
   if (runtimeStatus != lastRuntimeStatusSerial) {
     Serial.println(String("[RUNTIME] ") + runtimeStatus);
     lastRuntimeStatusSerial = runtimeStatus;
@@ -242,7 +414,6 @@ bool drawStatusTextMarquee(const String& text,
   const int padding = 4;
   const int charWidth = 6;
   const int charHeight = 8;
-  const unsigned long stepIntervalMs = 180;
 
   int innerX = boxX + padding;
   int innerY = boxY + (boxH - charHeight) / 2;
@@ -262,7 +433,7 @@ bool drawStatusTextMarquee(const String& text,
   bool needStep = false;
   bool isLong = ((int)text.length() > maxChars);
   unsigned long now = millis();
-  if (isLong && (now - state.lastStepMs >= stepIntervalMs)) {
+  if (isLong && (now - state.lastStepMs >= STATUS_MARQUEE_STEP_MS)) {
     int cycleLen = text.length() + 3;
     state.offset--;
     if (state.offset < 0) {
@@ -1548,6 +1719,7 @@ void loop()
  
    iot47_wifi_ota_loop();
   refreshNetworkStatusLine();
+  tickTftSerialLine();
  
  
   // Kiểm tra lệnh Serial
