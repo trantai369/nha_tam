@@ -181,6 +181,9 @@ void drawCircleBorder(uint16_t color) {
   tft.drawCircle(CENTER_X, CENTER_Y, CIRCLE_RADIUS, color);
 }
 
+float getSetTempMinBound();
+void enforceSetTempNotLowerThanCurrent();
+
 struct StatusMarqueeState {
   String text;
   int offset;
@@ -198,9 +201,58 @@ String serialMirrorPartialLine = "";
 String currentTftSerialLine = "";
 unsigned long currentTftSerialLineSince = 0;
 
+String toVietnameseNoDau(String text)
+{
+  const char* fromChars[] = {
+    "á","à","ả","ã","ạ","ă","ắ","ằ","ẳ","ẵ","ặ","â","ấ","ầ","ẩ","ẫ","ậ",
+    "Á","À","Ả","Ã","Ạ","Ă","Ắ","Ằ","Ẳ","Ẵ","Ặ","Â","Ấ","Ầ","Ẩ","Ẫ","Ậ",
+    "é","è","ẻ","ẽ","ẹ","ê","ế","ề","ể","ễ","ệ",
+    "É","È","Ẻ","Ẽ","Ẹ","Ê","Ế","Ề","Ể","Ễ","Ệ",
+    "í","ì","ỉ","ĩ","ị","Í","Ì","Ỉ","Ĩ","Ị",
+    "ó","ò","ỏ","õ","ọ","ô","ố","ồ","ổ","ỗ","ộ","ơ","ớ","ờ","ở","ỡ","ợ",
+    "Ó","Ò","Ỏ","Õ","Ọ","Ô","Ố","Ồ","Ổ","Ỗ","Ộ","Ơ","Ớ","Ờ","Ở","Ỡ","Ợ",
+    "ú","ù","ủ","ũ","ụ","ư","ứ","ừ","ử","ữ","ự",
+    "Ú","Ù","Ủ","Ũ","Ụ","Ư","Ứ","Ừ","Ử","Ữ","Ự",
+    "ý","ỳ","ỷ","ỹ","ỵ","Ý","Ỳ","Ỷ","Ỹ","Ỵ",
+    "đ","Đ"
+  };
+  const char* toChars[] = {
+    "a","a","a","a","a","a","a","a","a","a","a","a","a","a","a","a","a",
+    "A","A","A","A","A","A","A","A","A","A","A","A","A","A","A","A","A",
+    "e","e","e","e","e","e","e","e","e","e","e",
+    "E","E","E","E","E","E","E","E","E","E","E",
+    "i","i","i","i","i","I","I","I","I","I",
+    "o","o","o","o","o","o","o","o","o","o","o","o","o","o","o","o","o",
+    "O","O","O","O","O","O","O","O","O","O","O","O","O","O","O","O","O",
+    "u","u","u","u","u","u","u","u","u","u","u",
+    "U","U","U","U","U","U","U","U","U","U","U",
+    "y","y","y","y","y","Y","Y","Y","Y","Y",
+    "d","D"
+  };
+
+  const int mapCount = sizeof(fromChars) / sizeof(fromChars[0]);
+  for (int i = 0; i < mapCount; i++) {
+    text.replace(fromChars[i], toChars[i]);
+  }
+
+  String ascii = "";
+  for (unsigned int i = 0; i < text.length(); i++) {
+    unsigned char c = text[i];
+    if ((c >= 32 && c <= 126) || c == '\t') {
+      ascii += (c == '\t') ? ' ' : (char)c;
+    }
+  }
+
+  while (ascii.indexOf("  ") >= 0) {
+    ascii.replace("  ", " ");
+  }
+  ascii.trim();
+  return ascii;
+}
+
 void enqueueTftSerialLine(const String& line)
 {
-  String sanitized = line;
+  String sanitized = toVietnameseNoDau(line);
   sanitized.replace("\r", "");
   if (sanitized.length() == 0) {
     return;
@@ -267,7 +319,7 @@ void tickTftSerialLine()
   bool isLong = ((int)currentTftSerialLine.length() > maxChars);
   unsigned long requiredMs = TFT_SERIAL_MIN_HOLD_MS;
   if (isLong) {
-    requiredMs = ((currentTftSerialLine.length() + 3) * STATUS_MARQUEE_STEP_MS) + 300;
+    requiredMs = ((currentTftSerialLine.length() + 3 + maxChars) * STATUS_MARQUEE_STEP_MS) + 300;
   }
 
   if (millis() - currentTftSerialLineSince >= requiredMs && tftSerialQueueCount > 0) {
@@ -1382,6 +1434,7 @@ void relayControl(bool state)
     
     // Lưu nhiệt độ ban đầu
     initialWaterTemp = readTemperatureWithCalib();
+    currentTemp = initialWaterTemp;
     
     // Giữ nguyên setTemp đã cài trước đó trong WATER mode.
     // Chỉ giới hạn trong biên an toàn min/max.
@@ -1391,6 +1444,7 @@ void relayControl(bool state)
     if (setTemp > SET_TEMP_MAX) {
       setTemp = SET_TEMP_MAX;
     }
+    enforceSetTempNotLowerThanCurrent();
     lastDisplayedSetTemp = -999.0;
     lastDisplayedCurrentTemp = -999.0;
     
@@ -1432,10 +1486,29 @@ void relayControl(bool state)
 // ================== ĐIỀU CHỈNH NHIỆT ĐỘ ===================
 /*
  * Tăng/Giảm setTemp với giới hạn:
- * - MIN: SET_TEMP_MIN
+ * - MIN: max(SET_TEMP_MIN, currentTemp)
  * - MAX: SET_TEMP_MAX
  * - Bước: 0.5°C
  */
+
+float getSetTempMinBound()
+{
+  float minBound = SET_TEMP_MIN;
+  if (currentTemp > minBound) {
+    minBound = currentTemp;
+  }
+  return minBound;
+}
+
+void enforceSetTempNotLowerThanCurrent()
+{
+  float minBound = getSetTempMinBound();
+  if (setTemp < minBound) {
+    setTemp = minBound;
+    lastDisplayedSetTemp = -999.0f;  // Buoc TFT refresh gia tri setTemp
+    Serial.printf("[SETTEMP] Tu dong nang setTemp len %.1fC (>= current %.1fC)\n", setTemp, currentTemp);
+  }
+}
 
 void increaseSetTemp()
 {
@@ -1453,15 +1526,16 @@ void increaseSetTemp()
 
 void decreaseSetTemp()
 {
-  // Giảm nhiệt độ, giới hạn tối thiểu theo SET_TEMP_MIN
-  if (setTemp > SET_TEMP_MIN) {
+  // Giảm nhiệt độ, giới hạn tối thiểu theo nhiệt độ hiện tại.
+  float minBound = getSetTempMinBound();
+  if (setTemp > minBound) {
     setTemp -= 0.5;
-    if (setTemp < SET_TEMP_MIN) {
-      setTemp = SET_TEMP_MIN;
+    if (setTemp < minBound) {
+      setTemp = minBound;
     }
-    Serial.printf("[BUTTON-DOWN] ✓ Giảm setTemp → %.1f°C (min: %.1f°C)\n", setTemp, SET_TEMP_MIN);
+    Serial.printf("[BUTTON-DOWN] ✓ Giam setTemp → %.1fC (min: %.1fC)\n", setTemp, minBound);
   } else {
-    Serial.printf("[BUTTON-DOWN] ⚠ Đã đạt nhiệt độ tối thiểu: %.1f°C\n", SET_TEMP_MIN);
+    Serial.printf("[BUTTON-DOWN] Canh bao: setTemp khong duoc thap hon current (%.1fC)\n", minBound);
   }
 }
 
@@ -1763,6 +1837,7 @@ void loop()
   }
   
   currentTemp = readTemperatureWithCalib();
+  enforceSetTempNotLowerThanCurrent();
   bool personPresent = detectPerson();
   detectToiletOccupancy();
   
