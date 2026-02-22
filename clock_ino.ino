@@ -200,6 +200,9 @@ int tftSerialQueueCount = 0;
 String serialMirrorPartialLine = "";
 String currentTftSerialLine = "";
 unsigned long currentTftSerialLineSince = 0;
+bool currentTftSerialLineIsLong = false;
+int currentTftSerialLineRequiredSteps = 0;
+int currentTftSerialLineStepCounter = 0;
 
 String toVietnameseNoDau(String text)
 {
@@ -307,26 +310,37 @@ void tickTftSerialLine()
     if (popTftSerialLine(nextLine)) {
       currentTftSerialLine = nextLine;
       currentTftSerialLineSince = millis();
+      int maxChars = (WATER_STATUS_BOX_W - 8) / 6;
+      if (maxChars < 1) {
+        maxChars = 1;
+      }
+      currentTftSerialLineIsLong = ((int)currentTftSerialLine.length() > maxChars);
+      currentTftSerialLineRequiredSteps = currentTftSerialLine.length() + 3 + maxChars;
+      currentTftSerialLineStepCounter = 0;
     } else {
       return;
     }
   }
 
-  int maxChars = (WATER_STATUS_BOX_W - 8) / 6;
-  if (maxChars < 1) {
-    maxChars = 1;
-  }
-  bool isLong = ((int)currentTftSerialLine.length() > maxChars);
-  unsigned long requiredMs = TFT_SERIAL_MIN_HOLD_MS;
-  if (isLong) {
-    requiredMs = ((currentTftSerialLine.length() + 3 + maxChars) * STATUS_MARQUEE_STEP_MS) + 300;
+  bool canSwitch = false;
+  if (currentTftSerialLineIsLong) {
+    canSwitch = (currentTftSerialLineStepCounter >= currentTftSerialLineRequiredSteps);
+  } else {
+    canSwitch = (millis() - currentTftSerialLineSince >= TFT_SERIAL_MIN_HOLD_MS);
   }
 
-  if (millis() - currentTftSerialLineSince >= requiredMs && tftSerialQueueCount > 0) {
+  if (canSwitch && tftSerialQueueCount > 0) {
     String nextLine = "";
     if (popTftSerialLine(nextLine)) {
       currentTftSerialLine = nextLine;
       currentTftSerialLineSince = millis();
+      int maxChars = (WATER_STATUS_BOX_W - 8) / 6;
+      if (maxChars < 1) {
+        maxChars = 1;
+      }
+      currentTftSerialLineIsLong = ((int)currentTftSerialLine.length() > maxChars);
+      currentTftSerialLineRequiredSteps = currentTftSerialLine.length() + 3 + maxChars;
+      currentTftSerialLineStepCounter = 0;
     }
   }
 }
@@ -338,6 +352,13 @@ String getCurrentTftSerialLine()
     if (popTftSerialLine(nextLine)) {
       currentTftSerialLine = nextLine;
       currentTftSerialLineSince = millis();
+      int maxChars = (WATER_STATUS_BOX_W - 8) / 6;
+      if (maxChars < 1) {
+        maxChars = 1;
+      }
+      currentTftSerialLineIsLong = ((int)currentTftSerialLine.length() > maxChars);
+      currentTftSerialLineRequiredSteps = currentTftSerialLine.length() + 3 + maxChars;
+      currentTftSerialLineStepCounter = 0;
     }
   }
   return currentTftSerialLine;
@@ -493,6 +514,10 @@ bool drawStatusTextMarquee(const String& text,
     }
     state.lastStepMs = now;
     needStep = true;
+
+    if (text == currentTftSerialLine) {
+      currentTftSerialLineStepCounter++;
+    }
   }
 
   if (!changed && !needStep) {
