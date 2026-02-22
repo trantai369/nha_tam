@@ -176,7 +176,7 @@ void IRAM_ATTR handleButtonDown() {
 #define WATER_STATUS_BOX_Y 184
 #define WATER_STATUS_BOX_W 120
 #define WATER_STATUS_BOX_H 16
-#define STATUS_MARQUEE_STEP_MS 180
+#define STATUS_MARQUEE_STEP_MS 60
 #define TFT_SERIAL_QUEUE_SIZE 80
 #define TFT_SERIAL_MIN_HOLD_MS 1200
 
@@ -511,9 +511,9 @@ bool drawStatusTextMarquee(const String& text,
   unsigned long now = millis();
   if (isLong && (now - state.lastStepMs >= STATUS_MARQUEE_STEP_MS)) {
     int cycleLen = text.length() + 3;
-    state.offset--;
-    if (state.offset < 0) {
-      state.offset = cycleLen - 1;
+    state.offset++;
+    if (state.offset >= cycleLen) {
+      state.offset = 0;
     }
     state.lastStepMs = now;
     needStep = true;
@@ -1938,6 +1938,11 @@ void loop()
   }
   else if (!personPresent && personDetected) {
     personDetected = false;
+  }
+
+  if (waterOn && !personPresent) {
+    relayControl(false);
+    Serial.println("[SAFETY] Khong phat hien nguoi -> tat relay");
   }
 
   processAutoFlush();
