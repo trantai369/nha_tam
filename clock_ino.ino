@@ -135,10 +135,13 @@ volatile bool buttonWaterPressed = false;
 unsigned long lastButtonTime = 0;
 unsigned long buttonWaterPressTime = 0;  // Thời điểm nhấn nút WATER
 bool buttonWaterHeld = false;             // Flag: nút được giữ >= 2s
+unsigned long comboButtonsStartTime = 0;
+unsigned long lastComboProgressLog = 0;
 unsigned long lastUpButtonTime = 0;
 unsigned long lastDownButtonTime = 0;
 const unsigned long REPEAT_DELAY = 100;
 const unsigned long WATER_HOLD_TIME = 2000;  // 2 giây để bật relay
+const unsigned long COMBO_RESTART_HOLD_TIME = 5000;  // Giữ đồng thời UP+DOWN 5s để restart
 
 void IRAM_ATTR handleButtonUp() {
   if (millis() - lastButtonTime > 200) {
@@ -1570,6 +1573,61 @@ void lightControl(bool state)
   lightOn = state;
 }
 
+void setScreenAndLight(bool on)
+{
+  if (on) {
+    if (!screenOn) {
+      tft.writecommand(0x29);
+    }
+    screenOn = true;
+    lightControl(true);
+  } else {
+    if (screenOn) {
+      tft.writecommand(0x28);
+    }
+    screenOn = false;
+    lightControl(false);
+  }
+}
+
+bool checkComboRestartButtons()
+{
+  bool upPressed = (digitalRead(BUTTON_UP_PIN) == HIGH);
+  bool downPressed = (digitalRead(BUTTON_DOWN_PIN) == HIGH);
+
+  if (upPressed && downPressed) {
+    if (comboButtonsStartTime == 0) {
+      comboButtonsStartTime = millis();
+      lastComboProgressLog = 0;
+      Serial.println("[SAFE-RESTART] Bat dau giu dong thoi UP+DOWN");
+    }
+
+    unsigned long heldMs = millis() - comboButtonsStartTime;
+    if (millis() - lastComboProgressLog >= 500) {
+      Serial.printf("[SAFE-RESTART] Dang giu: %.1f/5.0s\n", heldMs / 1000.0f);
+      lastComboProgressLog = millis();
+    }
+
+    if (heldMs >= COMBO_RESTART_HOLD_TIME) {
+      Serial.println("[SAFE-RESTART] Du 5s, ESP se khoi dong lai");
+      delay(200);
+      ESP.restart();
+    }
+    return true;
+  }
+
+  if (comboButtonsStartTime != 0) {
+    unsigned long heldMs = millis() - comboButtonsStartTime;
+    if (heldMs < COMBO_RESTART_HOLD_TIME) {
+      Serial.println("[SAFE-RESTART] Huy restart (tha nut truoc 5s)");
+    }
+    comboButtonsStartTime = 0;
+    lastComboProgressLog = 0;
+  }
+
+  return false;
+}
+
 void servoFlushTrigger()
 {
   servoFlush.write(90);
@@ -1592,6 +1650,8 @@ void servoFlushTrigger()
 void processButtons()
 {
   bool waterButtonHigh = (digitalRead(BUTTON_WATER_PIN) == HIGH);  // HIGH = nhấn/giữ
+  bool upPressed = (digitalRead(BUTTON_UP_PIN) == HIGH);
+  bool downPressed = (digitalRead(BUTTON_DOWN_PIN) == HIGH);
   
   if (waterButtonHigh && !buttonWaterPressed) {
     // ===== PHÁT HIỆN CHUYỂN TỪ LOW → HIGH (VỪA NHẤN) =====
@@ -1607,7 +1667,7 @@ void processButtons()
       currentMode = WATER_CONTROL_MODE;
       lastMode = 99;
       lastActivityTime = millis();
-      screenOn = true;
+      setScreenAndLight(true);
       buttonWaterPressed = false;  // Xử lý xong, reset
       buttonWaterHeld = false;
     }
@@ -1617,7 +1677,7 @@ void processButtons()
       relayControl(false);
       delay(300);
       lastActivityTime = millis();
-      screenOn = true;
+      setScreenAndLight(true);
       buttonWaterPressed = false;  // Xử lý xong, reset
       buttonWaterHeld = false;
     }
@@ -1642,7 +1702,7 @@ void processButtons()
       relayControl(true);
       
       lastActivityTime = millis();
-      screenOn = true;
+      setScreenAndLight(true);
     }
     
     // Debug progress bar (cập nhật mỗi 300ms)
@@ -1674,7 +1734,7 @@ void processButtons()
         currentMode = HOME_MODE;
         lastMode = 99;
         lastActivityTime = millis();
-        screenOn = true;
+        setScreenAndLight(true);
       }
     }
     
@@ -1684,12 +1744,12 @@ void processButtons()
   }
   
   // ===== NÚT UP - TĂNG NHIỆT ĐỊ (WATER MODE: trước/sau relay đều chỉnh được) =====
-  if (currentMode == WATER_CONTROL_MODE && digitalRead(BUTTON_UP_PIN) == HIGH) {
+  if (currentMode == WATER_CONTROL_MODE && upPressed && !downPressed) {
     if (millis() - lastUpButtonTime >= REPEAT_DELAY) {
       increaseSetTemp();
       Serial.printf("[BUTTON-UP] Tăng setTemp → %.1f°C\n", setTemp);
       lastActivityTime = millis();
-      screenOn = true;
+      setScreenAndLight(true);
       lastUpButtonTime = millis();
     }
   } else {
@@ -1697,12 +1757,12 @@ void processButtons()
   }
   
   // ===== NÚT DOWN - GIẢM NHIỆT ĐỘ (WATER MODE: trước/sau relay đều chỉnh được) =====
-  if (currentMode == WATER_CONTROL_MODE && digitalRead(BUTTON_DOWN_PIN) == HIGH) {
+  if (currentMode == WATER_CONTROL_MODE && downPressed && !upPressed) {
     if (millis() - lastDownButtonTime >= REPEAT_DELAY) {
       decreaseSetTemp();
       Serial.printf("[BUTTON-DOWN] Giảm setTemp → %.1f°C\n", setTemp);
       lastActivityTime = millis();
-      screenOn = true;
+      setScreenAndLight(true);
       lastDownButtonTime = millis();
     }
   } else {
@@ -1796,7 +1856,7 @@ void setup()
   publishRuntimeStatusUpdate();
   
   lastActivityTime = millis();
-  screenOn = true;
+  setScreenAndLight(true);
   
   Serial.println("\n╔═════════════════════════════════════════╗");
   Serial.println("║  KHỞI TẠO HOÀN TẤT - SẴN SÀNG          ║");
@@ -1819,6 +1879,10 @@ void loop()
    iot47_wifi_ota_loop();
   refreshNetworkStatusLine();
   tickTftSerialLine();
+  if (checkComboRestartButtons()) {
+    delay(20);
+    return;
+  }
  
  
   // Kiểm tra lệnh Serial
@@ -1870,14 +1934,10 @@ void loop()
   
   if (personPresent && !personDetected) {
     personDetected = true;
-    lightControl(true);
     Serial.println("[PERSON] ► Phát hiện người!");
   }
   else if (!personPresent && personDetected) {
     personDetected = false;
-    if (!toiletOccupied && !waterOn) {
-      lightControl(false);
-    }
   }
 
   processAutoFlush();
@@ -1916,13 +1976,11 @@ void loop()
   
   unsigned long currentTime = millis();
   if (!personDetected && screenOn && (currentTime - lastActivityTime > SCREEN_OFF_TIMEOUT)) {
-    tft.writecommand(0x28);
-    screenOn = false;
+    setScreenAndLight(false);
   }
   
   if (personDetected && !screenOn) {
-    tft.writecommand(0x29);
-    screenOn = true;
+    setScreenAndLight(true);
     lastActivityTime = currentTime;
   }
   
