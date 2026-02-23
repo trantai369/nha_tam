@@ -193,10 +193,14 @@ struct StatusMarqueeState {
   unsigned long lastStepMs;
 };
 
+// ================== MIRROR SERIAL -> TFT ==================
+// Muc tieu:
+// 1) Lay cac dong Serial quan trong.
+// 2) Dua vao queue hien thi theo thu tu.
+// 3) Dong dai phai cuon het moi sang dong tiep theo.
 StatusMarqueeState homeStatusMarquee = {"", 0, 0};
 StatusMarqueeState waterStatusMarquee = {"", 0, 0};
 String lastRuntimeStatusSerial = "";
-String lastFullStatusSerial = "";
 String tftSerialQueue[TFT_SERIAL_QUEUE_SIZE];
 int tftSerialQueueHead = 0;
 int tftSerialQueueCount = 0;
@@ -207,60 +211,36 @@ bool currentTftSerialLineIsLong = false;
 int currentTftSerialLineRequiredSteps = 0;
 int currentTftSerialLineStepCounter = 0;
 
-String toVietnameseNoDau(String text)
+// Chi day cac dong can thiet len TFT de tranh roi man hinh.
+// Luu y: Tat ca chuoi muon hien thi dep tren TFT nen dung tieng Viet khong dau.
+bool shouldMirrorLineToTft(const String& line)
 {
-  const char* fromChars[] = {
-    "á","à","ả","ã","ạ","ă","ắ","ằ","ẳ","ẵ","ặ","â","ấ","ầ","ẩ","ẫ","ậ",
-    "Á","À","Ả","Ã","Ạ","Ă","Ắ","Ằ","Ẳ","Ẵ","Ặ","Â","Ấ","Ầ","Ẩ","Ẫ","Ậ",
-    "é","è","ẻ","ẽ","ẹ","ê","ế","ề","ể","ễ","ệ",
-    "É","È","Ẻ","Ẽ","Ẹ","Ê","Ế","Ề","Ể","Ễ","Ệ",
-    "í","ì","ỉ","ĩ","ị","Í","Ì","Ỉ","Ĩ","Ị",
-    "ó","ò","ỏ","õ","ọ","ô","ố","ồ","ổ","ỗ","ộ","ơ","ớ","ờ","ở","ỡ","ợ",
-    "Ó","Ò","Ỏ","Õ","Ọ","Ô","Ố","Ồ","Ổ","Ỗ","Ộ","Ơ","Ớ","Ờ","Ở","Ỡ","Ợ",
-    "ú","ù","ủ","ũ","ụ","ư","ứ","ừ","ử","ữ","ự",
-    "Ú","Ù","Ủ","Ũ","Ụ","Ư","Ứ","Ừ","Ử","Ữ","Ự",
-    "ý","ỳ","ỷ","ỹ","ỵ","Ý","Ỳ","Ỷ","Ỹ","Ỵ",
-    "đ","Đ"
-  };
-  const char* toChars[] = {
-    "a","a","a","a","a","a","a","a","a","a","a","a","a","a","a","a","a",
-    "A","A","A","A","A","A","A","A","A","A","A","A","A","A","A","A","A",
-    "e","e","e","e","e","e","e","e","e","e","e",
-    "E","E","E","E","E","E","E","E","E","E","E",
-    "i","i","i","i","i","I","I","I","I","I",
-    "o","o","o","o","o","o","o","o","o","o","o","o","o","o","o","o","o",
-    "O","O","O","O","O","O","O","O","O","O","O","O","O","O","O","O","O",
-    "u","u","u","u","u","u","u","u","u","u","u",
-    "U","U","U","U","U","U","U","U","U","U","U",
-    "y","y","y","y","y","Y","Y","Y","Y","Y",
-    "d","D"
-  };
-
-  const int mapCount = sizeof(fromChars) / sizeof(fromChars[0]);
-  for (int i = 0; i < mapCount; i++) {
-    text.replace(fromChars[i], toChars[i]);
+  if (line.length() == 0) {
+    return false;
   }
 
-  String ascii = "";
-  for (unsigned int i = 0; i < text.length(); i++) {
-    unsigned char c = text[i];
-    if ((c >= 32 && c <= 126) || c == '\t') {
-      ascii += (c == '\t') ? ' ' : (char)c;
-    }
+  // Chi mirror cac nhom trang thai quan trong de TFT gon va de doc.
+  bool important =
+    line.startsWith("[RUNTIME]") ||
+    line.startsWith("[SAFE-RESTART]") ||
+    line.startsWith("[SAFETY]") ||
+    line.startsWith("[TOILET]") ||
+    line.startsWith("[TIMEOUT]");
+
+  if (!important) {
+    return false;
   }
 
-  while (ascii.indexOf("  ") >= 0) {
-    ascii.replace("  ", " ");
-  }
-  ascii.trim();
-  return ascii;
+  return true;
 }
 
 void enqueueTftSerialLine(const String& line)
 {
-  String sanitized = toVietnameseNoDau(line);
+  String sanitized = line;
   sanitized.replace("\r", "");
-  if (sanitized.length() == 0) {
+  sanitized.replace("\t", " ");
+  sanitized.trim();
+  if (!shouldMirrorLineToTft(sanitized)) {
     return;
   }
 
@@ -306,6 +286,20 @@ void appendSerialMirrorChunk(const String& chunk, bool forceNewline)
   }
 }
 
+// Dong bo metadata cua dong dang hien thi tren TFT
+// de dam bao dong dai cuon het moi qua dong moi.
+void syncCurrentTftSerialLineMeta()
+{
+  int maxChars = (WATER_STATUS_BOX_W - 8) / 6;
+  if (maxChars < 1) {
+    maxChars = 1;
+  }
+
+  currentTftSerialLineIsLong = ((int)currentTftSerialLine.length() > maxChars);
+  currentTftSerialLineRequiredSteps = currentTftSerialLine.length() + 3 + maxChars;
+  currentTftSerialLineStepCounter = 0;
+}
+
 void tickTftSerialLine()
 {
   if (currentTftSerialLine.length() == 0) {
@@ -313,13 +307,7 @@ void tickTftSerialLine()
     if (popTftSerialLine(nextLine)) {
       currentTftSerialLine = nextLine;
       currentTftSerialLineSince = millis();
-      int maxChars = (WATER_STATUS_BOX_W - 8) / 6;
-      if (maxChars < 1) {
-        maxChars = 1;
-      }
-      currentTftSerialLineIsLong = ((int)currentTftSerialLine.length() > maxChars);
-      currentTftSerialLineRequiredSteps = currentTftSerialLine.length() + 3 + maxChars;
-      currentTftSerialLineStepCounter = 0;
+      syncCurrentTftSerialLineMeta();
     } else {
       return;
     }
@@ -337,13 +325,7 @@ void tickTftSerialLine()
     if (popTftSerialLine(nextLine)) {
       currentTftSerialLine = nextLine;
       currentTftSerialLineSince = millis();
-      int maxChars = (WATER_STATUS_BOX_W - 8) / 6;
-      if (maxChars < 1) {
-        maxChars = 1;
-      }
-      currentTftSerialLineIsLong = ((int)currentTftSerialLine.length() > maxChars);
-      currentTftSerialLineRequiredSteps = currentTftSerialLine.length() + 3 + maxChars;
-      currentTftSerialLineStepCounter = 0;
+      syncCurrentTftSerialLineMeta();
     }
   }
 }
@@ -355,13 +337,7 @@ String getCurrentTftSerialLine()
     if (popTftSerialLine(nextLine)) {
       currentTftSerialLine = nextLine;
       currentTftSerialLineSince = millis();
-      int maxChars = (WATER_STATUS_BOX_W - 8) / 6;
-      if (maxChars < 1) {
-        maxChars = 1;
-      }
-      currentTftSerialLineIsLong = ((int)currentTftSerialLine.length() > maxChars);
-      currentTftSerialLineRequiredSteps = currentTftSerialLine.length() + 3 + maxChars;
-      currentTftSerialLineStepCounter = 0;
+      syncCurrentTftSerialLineMeta();
     }
   }
   return currentTftSerialLine;
@@ -440,41 +416,32 @@ String buildRuntimeStatusLine()
 
 String buildSystemStatusLine()
 {
-  String fullStatus = "MODE:";
-  fullStatus += (currentMode == HOME_MODE) ? "HOME" : "WATER";
-  fullStatus += " | R:";
-  fullStatus += buildRuntimeStatusLine();
-  if (currentMode == WATER_CONTROL_MODE || waterOn) {
-    fullStatus += " | T:";
-    fullStatus += String(currentTemp, 1);
-    fullStatus += "/";
-    fullStatus += String(setTemp, 1);
-  }
-  fullStatus += " | ";
-  fullStatus += statusLine;
-  return fullStatus;
+  // Chuoi fallback ngan gon khi queue Serial khong co du lieu.
+  String line = "MODE:";
+  line += (currentMode == HOME_MODE) ? "HOME" : "WATER";
+  line += " | ";
+  line += buildRuntimeStatusLine();
+  return line;
 }
 
 String buildHomeStatusLine()
 {
+  // Neu queue Serial dang co dong moi, uu tien hien thi dong do tren TFT.
   String mirroredSerial = getCurrentTftSerialLine();
   if (mirroredSerial.length() > 0) {
     return mirroredSerial;
   }
+  // Neu queue rong, hien thi trang thai he thong co ban.
   return buildSystemStatusLine();
 }
 
 void publishRuntimeStatusUpdate()
 {
+  // Chi in runtime khi thay doi de giam spam TFT/Serial.
   String runtimeStatus = buildRuntimeStatusLine();
-  String fullStatus = buildSystemStatusLine();
   if (runtimeStatus != lastRuntimeStatusSerial) {
     Serial.println(String("[RUNTIME] ") + runtimeStatus);
     lastRuntimeStatusSerial = runtimeStatus;
-  }
-  if (fullStatus != lastFullStatusSerial) {
-    Serial.println(String("[STATUS] ") + fullStatus);
-    lastFullStatusSerial = fullStatus;
   }
 }
 
@@ -1401,7 +1368,7 @@ bool detectToiletOccupancy()
       toiletOccupied = true;
       toiletDetectTime = 0;
       autoFlushPending = false;
-      Serial.println("[TOILET] ✓ Xác nhận người ngồi");
+      Serial.println("[TOILET] Xac nhan nguoi ngoi");
       return true;
     }
   } else {
@@ -1441,7 +1408,7 @@ void processAutoFlush()
   if (millis() - autoFlushRequestedTime >= TOILET_LEAVE_FLUSH_DELAY) {
     toiletOccupied = false;
     autoFlushPending = false;
-    Serial.println("[TOILET] 🚽 Xac nhan roi 5s, tu dong xa");
+    Serial.println("[TOILET] Xac nhan roi 5s, tu dong xa");
     servoFlushTrigger();
     return;
   }
@@ -1954,7 +1921,7 @@ void loop()
     
     if (millis() - waterStartTime > WATER_TIMEOUT) {
       relayControl(false);
-      Serial.println("[TIMEOUT] Tắt nước (30min)");
+      Serial.println("[TIMEOUT] Tat nuoc (30min)");
     }
   }
   
