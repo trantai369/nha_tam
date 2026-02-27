@@ -155,6 +155,13 @@ const unsigned long REPEAT_DELAY = 100;
 const unsigned long WATER_HOLD_TIME = 2000;  // 2 giây để bật relay
 const unsigned long COMBO_RESTART_HOLD_TIME = 5000;  // Giữ đồng thời UP+DOWN 5s để restart
 const unsigned long COMBO_ARM_RELEASE_TIME = 400;     // Cần nhả cả 2 nút 0.4s trước khi cho phép combo
+const bool BACKLIGHT_ACTIVE_HIGH = false;             // Rescue mode: phan cung hien tai su dung den nen active-low
+const bool DISABLE_SCREEN_SLEEP_FOR_DEBUG = true;     // Tam thoi tat co che sleep de debug man den
+const bool ENABLE_TFT_DEBUG_OVERLAY = true;           // Hien log/running state truc tiep tren TFT
+
+unsigned long lastTftDebugOverlayMs = 0;
+String lastTftDebugOverlayLine1 = "";
+String lastTftDebugOverlayLine2 = "";
 
 void IRAM_ATTR handleButtonUp() {
   if (millis() - lastButtonTime > 200) {
@@ -241,6 +248,11 @@ bool shouldMirrorLineToTft(const String& line)
     line.startsWith("[RUNTIME]") ||
     line.startsWith("[TIME]") ||
     line.startsWith("[WIFI]") ||
+    line.startsWith("[DISPLAY]") ||
+    line.startsWith("[BUTTON-") ||
+    line.startsWith("[WATER]") ||
+    line.startsWith("[PERSON]") ||
+    line.startsWith("[LD2410-OUT]") ||
     line.startsWith("[SAFE-RESTART]") ||
     line.startsWith("[SAFETY]") ||
     line.startsWith("[TOILET]") ||
@@ -452,6 +464,68 @@ String buildHomeStatusLine()
   }
   // Neu queue rong, hien thi trang thai he thong co ban.
   return buildSystemStatusLine();
+}
+
+String trimForTftOverlay(const String& text, int maxLen)
+{
+  if (maxLen <= 0) {
+    return "";
+  }
+  if ((int)text.length() <= maxLen) {
+    return text;
+  }
+  return text.substring(0, maxLen);
+}
+
+void drawTftDebugOverlay(bool force = false)
+{
+  if (!ENABLE_TFT_DEBUG_OVERLAY) {
+    return;
+  }
+
+  unsigned long now = millis();
+  if (!force && (now - lastTftDebugOverlayMs < 220)) {
+    return;
+  }
+
+  bool upPressed = (digitalRead(BUTTON_UP_PIN) == HIGH);
+  bool downPressed = (digitalRead(BUTTON_DOWN_PIN) == HIGH);
+  bool waterPressed = (digitalRead(BUTTON_WATER_PIN) == HIGH);
+
+  String line1 = String("DBG M:") + ((currentMode == HOME_MODE) ? "H" : "W")
+               + " SC:" + (screenOn ? "1" : "0")
+               + " WT:" + (waterOn ? "1" : "0")
+               + " PR:" + (personDetected ? "1" : "0")
+               + " U" + (upPressed ? "1" : "0")
+               + "D" + (downPressed ? "1" : "0")
+               + "W" + (waterPressed ? "1" : "0");
+
+  String line2 = getCurrentTftSerialLine();
+  if (line2.length() == 0) {
+    line2 = buildSystemStatusLine();
+  }
+  line2 = trimForTftOverlay(line2, 38);
+
+  bool changed = force || (line1 != lastTftDebugOverlayLine1) || (line2 != lastTftDebugOverlayLine2);
+  if (!changed) {
+    return;
+  }
+
+  // Khung debug co dinh o day man hinh de nguoi van hanh doc trang thai khi khong co Serial.
+  const int panelY = SCREEN_HEIGHT - 32;
+  tft.fillRect(0, panelY, SCREEN_WIDTH, 32, COLOR_BLACK);
+  tft.drawFastHLine(0, panelY, SCREEN_WIDTH, COLOR_GOLD_DARK);
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_CYAN);
+  tft.drawString(line1, 2, panelY + 4);
+  tft.setTextColor(COLOR_GOLD);
+  tft.drawString(line2, 2, panelY + 18);
+  tft.setTextDatum(MC_DATUM);
+
+  lastTftDebugOverlayLine1 = line1;
+  lastTftDebugOverlayLine2 = line2;
+  lastTftDebugOverlayMs = now;
 }
 
 void publishRuntimeStatusUpdate()
@@ -912,6 +986,8 @@ void drawHomeScreen()
     tft.drawString(waterStatusBuf, CENTER_X, CENTER_Y + 60);
     lastDisplayedCurrentTemp = currentTemp;
   }
+
+  drawTftDebugOverlay(true);
   
   Serial.println("[DISPLAY] HOME SCREEN vẽ xong");
 }
@@ -983,6 +1059,8 @@ void drawWaterControlScreen()
                         waterStatusMarquee,
                         true);
   lastWaterDisplayedStatus = waterStatus;
+
+  drawTftDebugOverlay(true);
   
   Serial.println("[DISPLAY] WATER SCREEN vẽ xong");
 }
@@ -1097,6 +1175,7 @@ void updateHomeScreenElements()
   }
   drawCircleBorder(COLOR_GOLD_DARK);
   drawCircleBorder(COLOR_GOLD);
+  drawTftDebugOverlay();
 }
 
 void updateWaterScreenElements()
@@ -1202,6 +1281,7 @@ void updateWaterScreenElements()
                         waterStatusChanged);
 
   drawCircleBorder(COLOR_ORANGE);
+  drawTftDebugOverlay();
 }
 
 // ================== TEMPERATURE SENSOR CALIBRATION ==================
@@ -1586,12 +1666,28 @@ void decreaseSetTemp()
 
 void lightControl(bool state)
 {
-  digitalWrite(LIGHT_PIN, state ? HIGH : LOW);
-  lightOn = state;
+  bool requested = state;
+  if (DISABLE_SCREEN_SLEEP_FOR_DEBUG) {
+    requested = true;
+  }
+
+  int pinLevel;
+  if (BACKLIGHT_ACTIVE_HIGH) {
+    pinLevel = requested ? HIGH : LOW;
+  } else {
+    pinLevel = requested ? LOW : HIGH;
+  }
+
+  digitalWrite(LIGHT_PIN, pinLevel);
+  lightOn = requested;
 }
 
 void setScreenAndLight(bool on)
 {
+  if (DISABLE_SCREEN_SLEEP_FOR_DEBUG) {
+    on = true;
+  }
+
   if (on) {
     tft.writecommand(0x29);  // Luon gui lenh wake de dam bao man hinh sang
     screenOn = true;
@@ -1991,6 +2087,7 @@ void setup()
   
   lastActivityTime = millis();
   setScreenAndLight(true);
+  drawTftDebugOverlay(true);
   
   Serial.println("\n╔═════════════════════════════════════════╗");
   Serial.println("║  KHỞI TẠO HOÀN TẤT - SẴN SÀNG          ║");
@@ -2128,6 +2225,8 @@ void loop()
   if (personDetected) {
     lastActivityTime = currentTime;
   }
+
+  drawTftDebugOverlay();
   
   delay(50);
 }
