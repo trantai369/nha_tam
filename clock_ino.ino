@@ -90,6 +90,13 @@ const float SET_TEMP_MAX = 45.0f;
 int lastMinute = -1;
 int lastHour = -1;
 int lastDay = -1;
+bool ntpSynced = false;
+unsigned long lastNtpHealthCheckMs = 0;
+unsigned long lastNtpRetryMs = 0;
+unsigned long lastWifiRetryMs = 0;
+const unsigned long NTP_HEALTH_CHECK_INTERVAL = 5000;
+const unsigned long NTP_RETRY_INTERVAL = 30000;
+const unsigned long WIFI_RETRY_INTERVAL = 15000;
 
 // ================== CALIBRATION DATA ==================
 struct CalibrationData {
@@ -186,6 +193,10 @@ void drawCircleBorder(uint16_t color) {
 
 float getSetTempMinBound();
 void enforceSetTempNotLowerThanCurrent();
+bool hasValidNtpTime(struct tm* timeOut = nullptr);
+void requestNtpSync(const char* reason);
+bool connectWiFiWithAttempts(int maxAttempts, bool verboseLog);
+void maintainNetworkAndNtp();
 
 struct StatusMarqueeState {
   String text;
@@ -222,6 +233,8 @@ bool shouldMirrorLineToTft(const String& line)
   // Chi mirror cac nhom trang thai quan trong de TFT gon va de doc.
   bool important =
     line.startsWith("[RUNTIME]") ||
+    line.startsWith("[TIME]") ||
+    line.startsWith("[WIFI]") ||
     line.startsWith("[SAFE-RESTART]") ||
     line.startsWith("[SAFETY]") ||
     line.startsWith("[TOILET]") ||
@@ -840,25 +853,33 @@ void drawHomeScreen()
   drawCircleBorder(COLOR_GOLD_DARK);
   
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) return;
-  
   char timeBuf[10];
-  sprintf(timeBuf, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+  bool hasTime = hasValidNtpTime(&timeinfo);
+  if (hasTime) {
+    sprintf(timeBuf, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+    lastHour = timeinfo.tm_hour;
+    lastMinute = timeinfo.tm_min;
+  } else {
+    sprintf(timeBuf, "--:--");
+    lastHour = -99;
+    lastMinute = -99;
+  }
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(COLOR_WHITE);
   tft.setTextSize(4);
   tft.drawString(timeBuf, CENTER_X, CENTER_Y - 40);
-  
-  lastHour = timeinfo.tm_hour;
-  lastMinute = timeinfo.tm_min;
-  
+
   char dateBuf[20];
-  sprintf(dateBuf, "%02d/%02d/%04d", timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+  if (hasTime) {
+    sprintf(dateBuf, "%02d/%02d/%04d", timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+    lastDay = timeinfo.tm_mday;
+  } else {
+    sprintf(dateBuf, "NTP-LOI");
+    lastDay = -99;
+  }
   tft.setTextColor(COLOR_GOLD);
   tft.setTextSize(2);
   tft.drawString(dateBuf, CENTER_X, CENTER_Y + 10);
-  
-  lastDay = timeinfo.tm_mday;
   
   tft.drawRoundRect(HOME_STATUS_BOX_X, HOME_STATUS_BOX_Y, HOME_STATUS_BOX_W, HOME_STATUS_BOX_H, 6, COLOR_GOLD_DARK);
   tft.drawRoundRect(HOME_STATUS_BOX_X + 1, HOME_STATUS_BOX_Y + 1, HOME_STATUS_BOX_W - 2, HOME_STATUS_BOX_H - 2, 6, COLOR_GOLD);
@@ -964,36 +985,59 @@ void drawWaterControlScreen()
 void updateHomeScreenElements()
 {
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) return;
+  bool hasTime = hasValidNtpTime(&timeinfo);
   
-  // Cập nhật GIỜ (mỗi phút)
-  if (timeinfo.tm_hour != lastHour || timeinfo.tm_min != lastMinute) {
-    tft.fillRect(45, CENTER_Y - 55, 150, 30, COLOR_BLACK);
-    delay(15);
-    char timeBuf[10];
-    sprintf(timeBuf, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(COLOR_WHITE);
-    tft.setTextSize(4);
-    tft.drawString(timeBuf, CENTER_X, CENTER_Y - 40);
-    lastHour = timeinfo.tm_hour;
-    lastMinute = timeinfo.tm_min;
-    Serial.printf("[DISPLAY] Cập nhật giờ: %02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min);
-  }
-  
-  // Cập nhật NGÀY (mỗi ngày)
-  if (timeinfo.tm_mday != lastDay) {
-    tft.fillRect(45, CENTER_Y - 5, 150, 30, COLOR_BLACK);
-    delay(15);
-    char dateBuf[20];
-    sprintf(dateBuf, "%02d/%02d/%04d", timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
-    tft.setTextColor(COLOR_GOLD);
-    tft.setTextSize(2);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(dateBuf, CENTER_X, CENTER_Y + 10);
-    lastDay = timeinfo.tm_mday;
-    Serial.printf("[DISPLAY] Cập nhật ngày: %02d/%02d/%04d\n", 
-                  timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+  if (hasTime) {
+    // Cập nhật GIỜ (mỗi phút)
+    if (timeinfo.tm_hour != lastHour || timeinfo.tm_min != lastMinute) {
+      tft.fillRect(45, CENTER_Y - 55, 150, 30, COLOR_BLACK);
+      delay(15);
+      char timeBuf[10];
+      sprintf(timeBuf, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextColor(COLOR_WHITE);
+      tft.setTextSize(4);
+      tft.drawString(timeBuf, CENTER_X, CENTER_Y - 40);
+      lastHour = timeinfo.tm_hour;
+      lastMinute = timeinfo.tm_min;
+      Serial.printf("[DISPLAY] Cap nhat gio: %02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min);
+    }
+    
+    // Cập nhật NGÀY (mỗi ngày)
+    if (timeinfo.tm_mday != lastDay) {
+      tft.fillRect(45, CENTER_Y - 5, 150, 30, COLOR_BLACK);
+      delay(15);
+      char dateBuf[20];
+      sprintf(dateBuf, "%02d/%02d/%04d", timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+      tft.setTextColor(COLOR_GOLD);
+      tft.setTextSize(2);
+      tft.setTextDatum(MC_DATUM);
+      tft.drawString(dateBuf, CENTER_X, CENTER_Y + 10);
+      lastDay = timeinfo.tm_mday;
+      Serial.printf("[DISPLAY] Cap nhat ngay: %02d/%02d/%04d\n", 
+                    timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+    }
+  } else {
+    // Khong co NTP: van giu HOME/WATER hoat dong, hien thi placeholder.
+    if (lastHour != -99 || lastMinute != -99) {
+      tft.fillRect(45, CENTER_Y - 55, 150, 30, COLOR_BLACK);
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextColor(COLOR_WHITE);
+      tft.setTextSize(4);
+      tft.drawString("--:--", CENTER_X, CENTER_Y - 40);
+      lastHour = -99;
+      lastMinute = -99;
+      Serial.println("[TIME] NTP chua san sang, hien thi gio du phong");
+    }
+
+    if (lastDay != -99) {
+      tft.fillRect(45, CENTER_Y - 5, 150, 30, COLOR_BLACK);
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextColor(COLOR_GOLD);
+      tft.setTextSize(2);
+      tft.drawString("NTP-LOI", CENTER_X, CENTER_Y + 10);
+      lastDay = -99;
+    }
   }
   
   // Cập nhật TRẠNG THÁI (mỗi khi thay đổi)
@@ -1737,20 +1781,113 @@ void processButtons()
   }
 }
 
-void connectWiFi()
+bool connectWiFiWithAttempts(int maxAttempts, bool verboseLog)
 {
-  Serial.print("[WIFI] Kết nối: ");
+  if (WiFi.status() == WL_CONNECTED) {
+    refreshNetworkStatusLine();
+    if (verboseLog) {
+      Serial.println("[WIFI] Da ket noi");
+      Serial.print("IP: ");
+      Serial.println(statusLine);
+    }
+    return true;
+  }
+
+  if (verboseLog) {
+    Serial.print("[WIFI] Ket noi: ");
+  }
   WiFi.begin(ssid, password);
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+  while (WiFi.status() != WL_CONNECTED && attempts < maxAttempts) {
     delay(500);
-    Serial.print(".");
+    if (verboseLog) {
+      Serial.print(".");
+    }
     attempts++;
   }
-  Serial.println(WiFi.status() == WL_CONNECTED ? " OK" : " FAIL");
+
+  bool connected = (WiFi.status() == WL_CONNECTED);
+  if (verboseLog) {
+    Serial.println(connected ? " OK" : " FAIL");
+  }
   refreshNetworkStatusLine();
-  Serial.print("📶 ");
-  Serial.println(statusLine);
+  if (verboseLog) {
+    Serial.print("IP: ");
+    Serial.println(statusLine);
+  }
+  return connected;
+}
+
+void connectWiFi()
+{
+  connectWiFiWithAttempts(20, true);
+}
+
+bool hasValidNtpTime(struct tm* timeOut)
+{
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 30)) {
+    return false;
+  }
+  if (timeinfo.tm_year < (2020 - 1900)) {
+    return false;
+  }
+  if (timeOut != nullptr) {
+    *timeOut = timeinfo;
+  }
+  return true;
+}
+
+void requestNtpSync(const char* reason)
+{
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  lastNtpRetryMs = millis();
+  if (reason != nullptr) {
+    Serial.printf("[TIME] Thu dong bo NTP (%s)\n", reason);
+  } else {
+    Serial.println("[TIME] Thu dong bo NTP");
+  }
+}
+
+void maintainNetworkAndNtp()
+{
+  unsigned long now = millis();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    ntpSynced = false;
+    if (now - lastWifiRetryMs >= WIFI_RETRY_INTERVAL) {
+      lastWifiRetryMs = now;
+      Serial.println("[TIME] Mat WiFi, thu ket noi lai");
+      if (connectWiFiWithAttempts(8, false)) {
+        Serial.println("[TIME] WiFi ok, thu dong bo lai NTP");
+        requestNtpSync("wifi_reconnect");
+      }
+    }
+    return;
+  }
+
+  if (now - lastNtpHealthCheckMs < NTP_HEALTH_CHECK_INTERVAL) {
+    return;
+  }
+  lastNtpHealthCheckMs = now;
+
+  struct tm timeinfo;
+  if (hasValidNtpTime(&timeinfo)) {
+    if (!ntpSynced) {
+      ntpSynced = true;
+      Serial.printf("[TIME] NTP OK %02d:%02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    }
+    return;
+  }
+
+  if (ntpSynced) {
+    Serial.println("[TIME] Mat dong bo NTP");
+  }
+  ntpSynced = false;
+
+  if (now - lastNtpRetryMs >= NTP_RETRY_INTERVAL) {
+    requestNtpSync("periodic_retry");
+  }
 }
 
 // ================== SETUP ==================
@@ -1815,8 +1952,7 @@ void setup()
   Serial.println("[LD2410] GPIO2: OUT pin");
   
   connectWiFi();
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  Serial.println("[TIME] Đồng bộ NTP");
+  requestNtpSync("startup");
   
   currentTemp = readTemperatureWithCalib();
   Serial.printf("[TEMP] Khởi tạo: %.1f°C\n", currentTemp);
@@ -1845,6 +1981,7 @@ void loop()
  
    iot47_wifi_ota_loop();
   refreshNetworkStatusLine();
+  maintainNetworkAndNtp();
   tickTftSerialLine();
   if (checkComboRestartButtons()) {
     delay(20);
