@@ -50,7 +50,9 @@ AsyncWebServer server(80);
 
 const char* ssid = "VIETTEL_Thuy Ngan";
 const char* password = "147258369";
-const char* ntpServer = "pool.ntp.org";
+const char* ntpServer1 = "pool.ntp.org";
+const char* ntpServer2 = "time.google.com";
+const char* ntpServer3 = "time.cloudflare.com";
 const long gmtOffset_sec = 7 * 3600;
 const int daylightOffset_sec = 0;
 String statusLine = "IP: CHUA KET NOI";
@@ -95,7 +97,7 @@ unsigned long lastNtpHealthCheckMs = 0;
 unsigned long lastNtpRetryMs = 0;
 unsigned long lastWifiRetryMs = 0;
 const unsigned long NTP_HEALTH_CHECK_INTERVAL = 5000;
-const unsigned long NTP_RETRY_INTERVAL = 30000;
+const unsigned long NTP_RETRY_INTERVAL = 10000;
 const unsigned long WIFI_RETRY_INTERVAL = 15000;
 
 // ================== CALIBRATION DATA ==================
@@ -193,7 +195,7 @@ void drawCircleBorder(uint16_t color) {
 
 float getSetTempMinBound();
 void enforceSetTempNotLowerThanCurrent();
-bool hasValidNtpTime(struct tm* timeOut = nullptr);
+bool hasValidNtpTime(struct tm* timeOut = nullptr, uint32_t timeoutMs = 5);
 void requestNtpSync(const char* reason);
 bool connectWiFiWithAttempts(int maxAttempts, bool verboseLog);
 void maintainNetworkAndNtp();
@@ -1823,10 +1825,10 @@ void connectWiFi()
   connectWiFiWithAttempts(20, true);
 }
 
-bool hasValidNtpTime(struct tm* timeOut)
+bool hasValidNtpTime(struct tm* timeOut, uint32_t timeoutMs)
 {
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo, 30)) {
+  if (!getLocalTime(&timeinfo, timeoutMs)) {
     return false;
   }
   if (timeinfo.tm_year < (2020 - 1900)) {
@@ -1840,7 +1842,7 @@ bool hasValidNtpTime(struct tm* timeOut)
 
 void requestNtpSync(const char* reason)
 {
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer1, ntpServer2, ntpServer3);
   lastNtpRetryMs = millis();
   if (reason != nullptr) {
     Serial.printf("[TIME] Thu dong bo NTP (%s)\n", reason);
@@ -1872,7 +1874,7 @@ void maintainNetworkAndNtp()
   lastNtpHealthCheckMs = now;
 
   struct tm timeinfo;
-  if (hasValidNtpTime(&timeinfo)) {
+  if (hasValidNtpTime(&timeinfo, 30)) {
     if (!ntpSynced) {
       ntpSynced = true;
       Serial.printf("[TIME] NTP OK %02d:%02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
