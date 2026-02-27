@@ -122,6 +122,7 @@ bool lightOn = false;
 bool lastLightOn = !lightOn;
 bool personDetected = false;
 bool lastPersonDetected = !personDetected;
+bool personSensorEverDetected = false;
 bool toiletOccupied = false;
 bool lastToiletOccupied = !toiletOccupied;
 
@@ -146,11 +147,14 @@ unsigned long buttonWaterPressTime = 0;  // Thời điểm nhấn nút WATER
 bool buttonWaterHeld = false;             // Flag: nút được giữ >= 2s
 unsigned long comboButtonsStartTime = 0;
 unsigned long lastComboProgressLog = 0;
+unsigned long comboButtonsReleaseTime = 0;
+bool comboRestartArmed = false;
 unsigned long lastUpButtonTime = 0;
 unsigned long lastDownButtonTime = 0;
 const unsigned long REPEAT_DELAY = 100;
 const unsigned long WATER_HOLD_TIME = 2000;  // 2 giây để bật relay
 const unsigned long COMBO_RESTART_HOLD_TIME = 5000;  // Giữ đồng thời UP+DOWN 5s để restart
+const unsigned long COMBO_ARM_RELEASE_TIME = 400;     // Cần nhả cả 2 nút 0.4s trước khi cho phép combo
 
 void IRAM_ATTR handleButtonUp() {
   if (millis() - lastButtonTime > 200) {
@@ -1589,13 +1593,11 @@ void lightControl(bool state)
 void setScreenAndLight(bool on)
 {
   if (on) {
-    if (!screenOn) {
-      tft.writecommand(0x29);
-    }
+    tft.writecommand(0x29);  // Luon gui lenh wake de dam bao man hinh sang
     screenOn = true;
     lightControl(true);
   } else {
-    if (screenOn) {
+    if (screenOn) {  // Chi gui lenh sleep khi dang bat
       tft.writecommand(0x28);
     }
     screenOn = false;
@@ -1603,22 +1605,50 @@ void setScreenAndLight(bool on)
   }
 }
 
-bool checkComboRestartButtons()
+void checkComboRestartButtons()
 {
   bool upPressed = (digitalRead(BUTTON_UP_PIN) == HIGH);
   bool downPressed = (digitalRead(BUTTON_DOWN_PIN) == HIGH);
+  unsigned long now = millis();
+
+  // Arm combo restart chi khi nguoi dung da nhat ca 2 nut mot luc.
+  if (!upPressed && !downPressed) {
+    if (comboButtonsReleaseTime == 0) {
+      comboButtonsReleaseTime = now;
+    }
+    if (!comboRestartArmed && (now - comboButtonsReleaseTime >= COMBO_ARM_RELEASE_TIME)) {
+      comboRestartArmed = true;
+    }
+
+    if (comboButtonsStartTime != 0) {
+      unsigned long heldMs = now - comboButtonsStartTime;
+      if (heldMs < COMBO_RESTART_HOLD_TIME) {
+        Serial.println("[SAFE-RESTART] Huy restart (tha nut truoc 5s)");
+      }
+      comboButtonsStartTime = 0;
+      lastComboProgressLog = 0;
+    }
+    return;
+  }
+
+  comboButtonsReleaseTime = 0;
+
+  if (!comboRestartArmed) {
+    // Bo qua neu chua co pha "nhat ca 2 nut", tranh nhiu chan io.
+    return;
+  }
 
   if (upPressed && downPressed) {
     if (comboButtonsStartTime == 0) {
-      comboButtonsStartTime = millis();
+      comboButtonsStartTime = now;
       lastComboProgressLog = 0;
       Serial.println("[SAFE-RESTART] Bat dau giu dong thoi UP+DOWN");
     }
 
-    unsigned long heldMs = millis() - comboButtonsStartTime;
-    if (millis() - lastComboProgressLog >= 500) {
+    unsigned long heldMs = now - comboButtonsStartTime;
+    if (now - lastComboProgressLog >= 500) {
       Serial.printf("[SAFE-RESTART] Dang giu: %.1f/5.0s\n", heldMs / 1000.0f);
-      lastComboProgressLog = millis();
+      lastComboProgressLog = now;
     }
 
     if (heldMs >= COMBO_RESTART_HOLD_TIME) {
@@ -1626,19 +1656,18 @@ bool checkComboRestartButtons()
       delay(200);
       ESP.restart();
     }
-    return true;
+    return;
   }
 
+  // Dang giu 1 nut don -> huy dem combo neu truoc do dang dem.
   if (comboButtonsStartTime != 0) {
-    unsigned long heldMs = millis() - comboButtonsStartTime;
+    unsigned long heldMs = now - comboButtonsStartTime;
     if (heldMs < COMBO_RESTART_HOLD_TIME) {
       Serial.println("[SAFE-RESTART] Huy restart (tha nut truoc 5s)");
     }
     comboButtonsStartTime = 0;
     lastComboProgressLog = 0;
   }
-
-  return false;
 }
 
 void servoFlushTrigger()
@@ -1985,10 +2014,7 @@ void loop()
   refreshNetworkStatusLine();
   maintainNetworkAndNtp();
   tickTftSerialLine();
-  if (checkComboRestartButtons()) {
-    delay(20);
-    return;
-  }
+  checkComboRestartButtons();
  
  
   // Kiểm tra lệnh Serial
@@ -2086,7 +2112,11 @@ void loop()
   }
   
   unsigned long currentTime = millis();
-  if (!personDetected && screenOn && (currentTime - lastActivityTime > SCREEN_OFF_TIMEOUT)) {
+  if (personPresent) {
+    personSensorEverDetected = true;
+  }
+
+  if (personSensorEverDetected && !personDetected && screenOn && (currentTime - lastActivityTime > SCREEN_OFF_TIMEOUT)) {
     setScreenAndLight(false);
   }
   
