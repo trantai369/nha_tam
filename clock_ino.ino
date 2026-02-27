@@ -158,10 +158,14 @@ const unsigned long COMBO_ARM_RELEASE_TIME = 400;     // Cần nhả cả 2 nút
 const bool BACKLIGHT_ACTIVE_HIGH = false;             // Rescue mode: phan cung hien tai su dung den nen active-low
 const bool DISABLE_SCREEN_SLEEP_FOR_DEBUG = true;     // Tam thoi tat co che sleep de debug man den
 const bool ENABLE_TFT_DEBUG_OVERLAY = true;           // Hien log/running state truc tiep tren TFT
+const unsigned long BACKLIGHT_POLARITY_TOGGLE_HOLD_TIME = 2500;  // Giu UP+DOWN+WATER de dao cuc den nen
 
 unsigned long lastTftDebugOverlayMs = 0;
 String lastTftDebugOverlayLine1 = "";
 String lastTftDebugOverlayLine2 = "";
+bool backlightActiveHigh = BACKLIGHT_ACTIVE_HIGH;
+unsigned long backlightToggleStartTime = 0;
+bool backlightToggleTriggered = false;
 
 void IRAM_ATTR handleButtonUp() {
   if (millis() - lastButtonTime > 200) {
@@ -1672,7 +1676,7 @@ void lightControl(bool state)
   }
 
   int pinLevel;
-  if (BACKLIGHT_ACTIVE_HIGH) {
+  if (backlightActiveHigh) {
     pinLevel = requested ? HIGH : LOW;
   } else {
     pinLevel = requested ? LOW : HIGH;
@@ -1701,11 +1705,46 @@ void setScreenAndLight(bool on)
   }
 }
 
+void checkBacklightPolarityToggle()
+{
+  bool upPressed = (digitalRead(BUTTON_UP_PIN) == HIGH);
+  bool downPressed = (digitalRead(BUTTON_DOWN_PIN) == HIGH);
+  bool waterPressed = (digitalRead(BUTTON_WATER_PIN) == HIGH);
+
+  bool comboPressed = upPressed && downPressed && waterPressed;
+  if (!comboPressed) {
+    backlightToggleStartTime = 0;
+    backlightToggleTriggered = false;
+    return;
+  }
+
+  if (backlightToggleStartTime == 0) {
+    backlightToggleStartTime = millis();
+    Serial.println("[DISPLAY] Giu UP+DOWN+WATER 2.5s de dao cuc den nen");
+  }
+
+  if (!backlightToggleTriggered && (millis() - backlightToggleStartTime >= BACKLIGHT_POLARITY_TOGGLE_HOLD_TIME)) {
+    backlightToggleTriggered = true;
+    backlightActiveHigh = !backlightActiveHigh;
+    setScreenAndLight(true);
+    Serial.printf("[DISPLAY] Da dao cuc den nen. ACTIVE_HIGH=%d\n", backlightActiveHigh ? 1 : 0);
+  }
+}
+
 void checkComboRestartButtons()
 {
   bool upPressed = (digitalRead(BUTTON_UP_PIN) == HIGH);
   bool downPressed = (digitalRead(BUTTON_DOWN_PIN) == HIGH);
+  bool waterPressed = (digitalRead(BUTTON_WATER_PIN) == HIGH);
   unsigned long now = millis();
+
+  // Dang dung combo 3 nut de debug den nen -> bo qua logic restart.
+  if (waterPressed) {
+    comboButtonsStartTime = 0;
+    lastComboProgressLog = 0;
+    comboButtonsReleaseTime = 0;
+    return;
+  }
 
   // Arm combo restart chi khi nguoi dung da nhat ca 2 nut mot luc.
   if (!upPressed && !downPressed) {
@@ -2111,6 +2150,7 @@ void loop()
   refreshNetworkStatusLine();
   maintainNetworkAndNtp();
   tickTftSerialLine();
+  checkBacklightPolarityToggle();
   checkComboRestartButtons();
  
  
