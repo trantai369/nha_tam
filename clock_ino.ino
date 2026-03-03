@@ -1,20 +1,3 @@
-/*
- * ╔════════════════════════════════════════════════════════════════════════════╗
- * ║                   SMART BATHROOM v5.1                                    ║
- * ║     GPIO OUT + SERVO CALIBRATION + TEMPERATURE FEEDBACK                  ║
- * ║                                                                            ║
- * ║ Calibration:                                                              ║
- * ║ - Góc 0°   = nhiệt độ THẤP nhất                                          ║
- * ║ - Góc 180° = nhiệt độ CAO nhất                                           ║
- * ║ - Tự động map setTemp → servo angle                                     ║
- * ║                                                                            ║
- * ║ Feedback:                                                                 ║
- * ║ - Hiển thị real-time: set vs current temperature                        ║
- * ║ - Hiển thị servo angle                                                   ║
- * ║ - Debug mỗi 2 giây                                                       ║
- * ║                                                                            ║
- * ╚════════════════════════════════════════════════════════════════════════════╝
- */
 
 #include <SPI.h>
 #include <TFT_eSPI.h>
@@ -1893,3 +1876,4 @@ void loop()
   
   delay(50);
 }
+
